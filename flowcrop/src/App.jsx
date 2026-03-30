@@ -1,71 +1,31 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { 
-  Upload, Image as ImageIcon, Download, ChevronRight, ChevronLeft, 
-  RotateCw, RefreshCcw, Brush, Move, Settings, CheckCircle2, ScanFace, X
-} from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Upload, Download, Settings, RefreshCw, ChevronLeft, ChevronRight, Crop, Move, Eraser, ScanFace, Save, Image as ImageIcon, X } from 'lucide-react';
 
-// --- 工具函数：根据比例获取宽高 ---
-const getAspectSize = (ratioStr, maxWidth, maxHeight) => {
-  if (ratioStr === 'free') return { width: maxWidth * 0.8, height: maxHeight * 0.8 };
-  const [w, h] = ratioStr.split(':').map(Number);
-  const ratio = w / h;
-  let targetWidth = maxWidth * 0.8;
-  let targetHeight = targetWidth / ratio;
-  
-  if (targetHeight > maxHeight * 0.8) {
-    targetHeight = maxHeight * 0.8;
-    targetWidth = targetHeight * ratio;
-  }
-  return { width: targetWidth, height: targetHeight };
-};
+const ASPECT_RATIOS = [
+  { label: '1:1', value: 1 },
+  { label: '3:4', value: 0.75 },
+  { label: '4:3', value: 1.333 },
+  { label: '16:9', value: 1.778 },
+  { label: '自由', value: null }
+];
 
-export default function BatchCropper() {
-  const [step, setStep] = useState('upload'); // upload, edit, export
+export default function App() {
+  const [step, setStep] = useState('upload'); 
   const [images, setImages] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  
-  // 全局设置
-  const [globalRatio, setGlobalRatio] = useState('1:1');
-  const [exportFormat, setExportFormat] = useState('image/jpeg');
-  const [exportQuality, setExportQuality] = useState(0.9);
-  const [autoFaceDetect, setAutoFaceDetect] = useState(false);
+  const [aspectRatio, setAspectRatio] = useState(1.778); 
+  const [editMode, setEditMode] = useState('move'); 
+  const [isExporting, setIsExporting] = useState(false);
+  const [showPreviewModal, setShowPreviewModal] = useState(null); // 用于手机端长按保存
 
-  // 编辑器状态
-  const [editMode, setEditMode] = useState('move'); // 'move' 或 'smudge'
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1, rotation: 0 });
-  const [smudgePaths, setSmudgePaths] = useState([]);
-  
-  // 引用
   const containerRef = useRef(null);
-  const imageRef = useRef(null);
-  const smudgeCanvasRef = useRef(null);
-  const isDragging = useRef(false);
+  const visualCanvasRef = useRef(null);
+  const activePointers = useRef(new Map());
+  const pinchStartRef = useRef(null);
   const dragStart = useRef({ x: 0, y: 0 });
+  const isDragging = useRef(false);
 
-  // 修复：使用原生事件绑定来拦截浏览器的默认网页缩放行为
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const handleWheel = (e) => {
-      if (editMode !== 'move') return;
-      // 核心代码：阻止浏览器默认的网页滚动/缩放
-      e.preventDefault(); 
-      // 稍微调大了一点缩放灵敏度，让触控板更顺滑
-      const zoomSensitivity = 0.002; 
-      const delta = -e.deltaY * zoomSensitivity;
-      setTransform(prev => ({
-        ...prev,
-        scale: Math.max(0.1, Math.min(prev.scale + delta, 5))
-      }));
-    };
-
-    // 必须设置为 passive: false 才能生效
-    container.addEventListener('wheel', handleWheel, { passive: false });
-    return () => container.removeEventListener('wheel', handleWheel);
-  }, [editMode, step, currentIndex]);
-
-  // 动态加载 JSZip
+  // 动态加载库
   useEffect(() => {
     if (!window.JSZip) {
       const script = document.createElement('script');
@@ -75,513 +35,390 @@ export default function BatchCropper() {
     }
   }, []);
 
-  // --- 步骤一：上传图片 ---
-  const handleUpload = (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
-    if (files.length > 30) {
-      alert("一次最多只能上传 30 张图片！已截取前 30 张。");
-      files.splice(30);
-    }
+  // 阻止默认缩放
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || step !== 'edit') return;
+    const handleWheel = (e) => {
+      if (editMode !== 'move') return;
+      e.preventDefault(); 
+      const delta = -e.deltaY * 0.002;
+      setImages(prev => {
+        const newImages = [...prev];
+        const t = newImages[currentIndex].transform;
+        newImages[currentIndex].transform = { ...t, scale: Math.max(0.1, Math.min(t.scale + delta, 5)) };
+        return newImages;
+      });
+    };
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [step, currentIndex, editMode]);
 
-    const newImages = files.map(file => ({
-      id: Math.random().toString(36).substr(2, 9),
+  const handleFileUpload = (e) => {
+    const files = Array.from(e.target.files).slice(0, 30);
+    if (files.length === 0) return;
+    const newImages = files.map((file, index) => ({
+      id: Date.now() + index,
       file,
       url: URL.createObjectURL(file),
-      name: file.name,
-      transform: { x: 0, y: 0, scale: 1, rotation: 0 },
-      smudgePaths: [],
-      ratio: globalRatio,
-      processedDataUrl: null // 保存最终裁剪的图片
+      transform: { x: 0, y: 0, scale: 1 },
+      smudgePaths: []
     }));
-
     setImages(newImages);
     setCurrentIndex(0);
     setStep('edit');
   };
 
-  // --- 步骤二：编辑器逻辑 ---
-  const currentImage = images[currentIndex];
-
-  // 初始化当前图片的变换状态
-  useEffect(() => {
-    if (currentImage && step === 'edit') {
-      // 模拟人脸识别居中 (向下平移一点模拟脸部位置)
-      let initialTransform = currentImage.transform;
-      if (autoFaceDetect && currentImage.transform.scale === 1 && currentImage.transform.x === 0) {
-         initialTransform = { ...initialTransform, y: 20 }; // 假装人脸偏上
-      }
-      setTransform(initialTransform);
-      setSmudgePaths(currentImage.smudgePaths || []);
-      setGlobalRatio(currentImage.ratio || globalRatio);
-      
-      // 清空并重绘涂抹画布
-      if (smudgeCanvasRef.current && imageRef.current) {
-         const ctx = smudgeCanvasRef.current.getContext('2d');
-         ctx.clearRect(0, 0, smudgeCanvasRef.current.width, smudgeCanvasRef.current.height);
-         (currentImage.smudgePaths || []).forEach(path => drawSmudgePath(ctx, path));
-      }
-    }
-  }, [currentIndex, currentImage, step, autoFaceDetect]);
-
-  // 更新比例
-  const handleRatioChange = (e) => {
-    const newRatio = e.target.value;
-    setGlobalRatio(newRatio);
-    // 更新当前及后续图片的比例设定
-    setImages(prev => prev.map((img, idx) => 
-      idx >= currentIndex ? { ...img, ratio: newRatio } : img
-    ));
-    setTransform({ x: 0, y: 0, scale: 1, rotation: 0 }); // 切换比例重置当前变换
-  };
-
-  // 保存当前进度到列表
-  const saveCurrentProgress = () => {
-    setImages(prev => {
-      const newImages = [...prev];
-      newImages[currentIndex] = {
-        ...newImages[currentIndex],
-        transform,
-        smudgePaths,
-        ratio: globalRatio
-      };
-      return newImages;
-    });
-  };
-
-  // 导航
-  const handleNext = async () => {
-    saveCurrentProgress();
-    // 实际生成裁剪结果并暂存
-    const dataUrl = await generateCroppedImage();
-    setImages(prev => {
-      const newImages = [...prev];
-      newImages[currentIndex].processedDataUrl = dataUrl;
-      return newImages;
-    });
-
-    if (currentIndex < images.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-    } else {
-      setStep('export');
-    }
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      saveCurrentProgress();
-      setCurrentIndex(prev => prev - 1);
-    }
-  };
-
-  // 交互控制 (拖拽/涂抹)
+  // --- 交互逻辑 ---
   const onPointerDown = (e) => {
-    isDragging.current = true;
-    dragStart.current = { x: e.clientX, y: e.clientY };
-    
-    if (editMode === 'smudge' && smudgeCanvasRef.current) {
-       const rect = smudgeCanvasRef.current.getBoundingClientRect();
-       const scaleX = smudgeCanvasRef.current.width / rect.width;
-       const scaleY = smudgeCanvasRef.current.height / rect.height;
-       
-       const startX = (e.clientX - rect.left) * scaleX;
-       const startY = (e.clientY - rect.top) * scaleY;
-       
-       const newPath = { points: [{ x: startX, y: startY }] };
-       setSmudgePaths(prev => [...prev, newPath]);
+    if (editMode !== 'move' && editMode !== 'smudge') return;
+    e.target.setPointerCapture(e.pointerId);
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (editMode === 'move') {
+      if (activePointers.current.size === 1) {
+        isDragging.current = true;
+        dragStart.current = { x: e.clientX, y: e.clientY };
+      } else if (activePointers.current.size === 2) {
+        isDragging.current = false;
+        const pts = Array.from(activePointers.current.values());
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        pinchStartRef.current = { initialDist: dist, initialScale: images[currentIndex].transform.scale };
+      }
+    } else if (editMode === 'smudge' && activePointers.current.size === 1) {
+      isDragging.current = true;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setImages(prev => {
+        const newImages = [...prev];
+        const img = newImages[currentIndex];
+        img.smudgePaths = [...(img.smudgePaths || []), { points: [{ x, y }] }];
+        return newImages;
+      });
     }
   };
 
   const onPointerMove = (e) => {
-    if (!isDragging.current) return;
+    if (!activePointers.current.has(e.pointerId)) return;
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (editMode === 'move') {
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-      dragStart.current = { x: e.clientX, y: e.clientY };
-    } else if (editMode === 'smudge' && smudgeCanvasRef.current) {
-       const rect = smudgeCanvasRef.current.getBoundingClientRect();
-       const scaleX = smudgeCanvasRef.current.width / rect.width;
-       const scaleY = smudgeCanvasRef.current.height / rect.height;
-       
-       const x = (e.clientX - rect.left) * scaleX;
-       const y = (e.clientY - rect.top) * scaleY;
-       
-       setSmudgePaths(prev => {
-         const paths = [...prev];
-         paths[paths.length - 1].points.push({ x, y });
-         
-         // 实时绘制
-         const ctx = smudgeCanvasRef.current.getContext('2d');
-         drawSmudgePath(ctx, paths[paths.length - 1]);
-         return paths;
-       });
-    }
-  };
-
-  const onPointerUp = () => {
-    isDragging.current = false;
-  };
-
-  // 绘制单条涂抹路径 (使用马赛克/模糊效果)
-  const drawSmudgePath = (ctx, path) => {
-    if (!path || path.points.length < 2) return;
-    ctx.beginPath();
-    ctx.moveTo(path.points[0].x, path.points[0].y);
-    for (let i = 1; i < path.points.length; i++) {
-      ctx.lineTo(path.points[i].x, path.points[i].y);
-    }
-    ctx.strokeStyle = 'rgba(150, 150, 150, 0.9)'; // 模拟模糊遮盖，实际开发中可用复杂的像素算法
-    ctx.lineWidth = 30;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.filter = 'blur(5px)'; // HTML5 Canvas 滤镜
-    ctx.stroke();
-    ctx.filter = 'none';
-  };
-
-  // 重置当前图片
-  const handleReset = () => {
-    setTransform({ x: 0, y: 0, scale: 1, rotation: 0 });
-    setSmudgePaths([]);
-    if (smudgeCanvasRef.current) {
-      const ctx = smudgeCanvasRef.current.getContext('2d');
-      ctx.clearRect(0, 0, smudgeCanvasRef.current.width, smudgeCanvasRef.current.height);
-    }
-  };
-
-  // 核心：生成最终裁剪的图片 (利用隐藏 Canvas)
-  const generateCroppedImage = () => {
-    return new Promise((resolve) => {
-      if (!containerRef.current || !imageRef.current) {
-        resolve(null);
-        return;
+      if (activePointers.current.size === 1 && isDragging.current) {
+        const dx = e.clientX - dragStart.current.x;
+        const dy = e.clientY - dragStart.current.y;
+        setImages(prev => {
+          const newImages = [...prev];
+          const t = newImages[currentIndex].transform;
+          newImages[currentIndex].transform = { ...t, x: t.x + dx, y: t.y + dy };
+          return newImages;
+        });
+        dragStart.current = { x: e.clientX, y: e.clientY };
+      } else if (activePointers.current.size === 2 && pinchStartRef.current) {
+        const pts = Array.from(activePointers.current.values());
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        const scale = pinchStartRef.current.initialScale * (dist / pinchStartRef.current.initialDist);
+        setImages(prev => {
+          const newImages = [...prev];
+          newImages[currentIndex].transform.scale = Math.max(0.1, Math.min(scale, 5));
+          return newImages;
+        });
       }
+    } else if (editMode === 'smudge' && isDragging.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setImages(prev => {
+        const newImages = [...prev];
+        const paths = newImages[currentIndex].smudgePaths;
+        paths[paths.length - 1].points.push({ x, y });
+        return newImages;
+      });
+    }
+  };
 
-      const containerRect = containerRef.current.getBoundingClientRect();
-      const { width: cropWidth, height: cropHeight } = getAspectSize(globalRatio, containerRect.width, containerRect.height);
-      
-      const canvas = document.createElement('canvas');
-      canvas.width = cropWidth;
-      canvas.height = cropHeight;
-      const ctx = canvas.getContext('2d');
+  const onPointerUp = (e) => {
+    activePointers.current.delete(e.pointerId);
+    if (activePointers.current.size === 0) isDragging.current = false;
+  };
 
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        // 画布中心
-        const cx = cropWidth / 2;
-        const cy = cropHeight / 2;
-
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, cropWidth, cropHeight);
-
-        ctx.save();
-        ctx.translate(cx, cy); // 移动到中心
-        ctx.translate(transform.x, transform.y); // 应用用户拖拽
-        ctx.rotate((transform.rotation * Math.PI) / 180); // 应用旋转
-        ctx.scale(transform.scale, transform.scale); // 应用缩放
+  // --- 核心渲染逻辑：生成裁剪结果 ---
+  const getCroppedCanvas = (index) => {
+    return new Promise((resolve) => {
+      const imgObj = new Image();
+      const item = images[index];
+      imgObj.src = item.url;
+      imgObj.onload = () => {
+        const canvas = document.createElement('canvas');
+        const container = containerRef.current;
+        const rect = container.getBoundingClientRect();
         
-        // 计算图片在容器中的基础缩放 (object-fit: contain 效果)
-        const baseScale = Math.min(containerRect.width / img.width, containerRect.height / img.height);
-        const drawWidth = img.width * baseScale;
-        const drawHeight = img.height * baseScale;
+        // 计算裁剪区域 (基于 UI 中白色框的比例)
+        const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
+        const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
+        
+        canvas.width = maskWidth * 2; // 双倍分辨率保证清晰
+        canvas.height = maskHeight * 2;
+        const ctx = canvas.getContext('2d');
 
-        // 绘制原图
-        ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        // 绘制背景
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // 绘制涂抹层
-        if (smudgeCanvasRef.current) {
-           ctx.drawImage(smudgeCanvasRef.current, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        // 应用变换
+        ctx.save();
+        ctx.translate(canvas.width/2, canvas.height/2);
+        ctx.scale(item.transform.scale * 2, item.transform.scale * 2);
+        ctx.translate(item.transform.x / item.transform.scale, item.transform.y / item.transform.scale);
+        
+        // 绘制图片
+        const imgRatio = imgObj.width / imgObj.height;
+        let drawW, drawH;
+        if (imgRatio > (rect.width/rect.height)) {
+          drawW = rect.width;
+          drawH = rect.width / imgRatio;
+        } else {
+          drawH = rect.height;
+          drawW = rect.height * imgRatio;
+        }
+        ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
+
+        // --- 应用去水印模糊 ---
+        if (item.smudgePaths && item.smudgePaths.length > 0) {
+          item.smudgePaths.forEach(path => {
+            if (path.points.length < 2) return;
+            
+            ctx.save();
+            // 1. 创建涂抹路径作为裁剪区
+            ctx.beginPath();
+            const startX = (path.points[0].x - rect.width/2 - item.transform.x) / item.transform.scale;
+            const startY = (path.points[0].y - rect.height/2 - item.transform.y) / item.transform.scale;
+            ctx.moveTo(startX, startY);
+            for(let i=1; i<path.points.length; i++) {
+              const px = (path.points[i].x - rect.width/2 - item.transform.x) / item.transform.scale;
+              const py = (path.points[i].y - rect.height/2 - item.transform.y) / item.transform.scale;
+              ctx.lineTo(px, py);
+            }
+            ctx.lineWidth = 30 / item.transform.scale;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+            ctx.clip();
+
+            // 2. 在裁剪区内绘制模糊的图片
+            ctx.filter = 'blur(15px)';
+            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
+            ctx.restore();
+          });
         }
 
         ctx.restore();
-        
-        // 导出
-        const dataUrl = canvas.toDataURL(exportFormat, parseFloat(exportQuality));
-        resolve(dataUrl);
+        resolve(canvas);
       };
-      img.src = currentImage.url;
     });
   };
 
-  // --- 步骤三：导出逻辑 ---
-  const handleExportZip = async () => {
-    if (!window.JSZip) {
-      alert("正在加载打包组件，请稍后点击...");
-      return;
-    }
-    const zip = new window.JSZip();
-    const folder = zip.folder("cropped_images");
+  // 保存单张
+  const handleSaveCurrent = async () => {
+    const canvas = await getCroppedCanvas(currentIndex);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     
-    images.forEach((img, index) => {
-      if (img.processedDataUrl) {
-        // 去掉 dataUrl 的头部
-        const base64Data = img.processedDataUrl.split(',')[1];
-        const ext = exportFormat === 'image/png' ? 'png' : 'jpg';
-        const filename = `cropped_${index + 1}_${img.name.split('.')[0]}.${ext}`;
-        folder.file(filename, base64Data, {base64: true});
-      }
-    });
+    // 如果是手机端，显示预览大图提示长按保存
+    if (window.innerWidth < 768) {
+      setShowPreviewModal(dataUrl);
+    } else {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `flowcrop_${Date.now()}.jpg`;
+      a.click();
+    }
+  };
 
-    const content = await zip.generateAsync({type: "blob"});
-    // 触发下载
+  // 一键全部保存 (循环触发)
+  const handleSaveAll = async () => {
+    setIsExporting(true);
+    for (let i = 0; i < images.length; i++) {
+      const canvas = await getCroppedCanvas(i);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `flowcrop_all_${i+1}.jpg`;
+      a.click();
+      await new Promise(r => setTimeout(r, 300)); // 间隔防止浏览器拦截
+    }
+    setIsExporting(false);
+  };
+
+  // 打包 ZIP
+  const handleExportZip = async () => {
+    if (!window.JSZip) return;
+    setIsExporting(true);
+    const zip = new window.JSZip();
+    for (let i = 0; i < images.length; i++) {
+      const canvas = await getCroppedCanvas(i);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.9));
+      zip.file(`cropped_${i + 1}.jpg`, blob);
+    }
+    const content = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(content);
     const a = document.createElement('a');
     a.href = url;
-    a.download = "batch_cropped_images.zip";
-    document.body.appendChild(a);
+    a.download = `FlowCrop_Pack_${Date.now()}.zip`;
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setIsExporting(false);
   };
 
+  // --- 实时预览绘制 ---
+  useEffect(() => {
+    if (step !== 'edit' || !visualCanvasRef.current) return;
+    const canvas = visualCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width; canvas.height = rect.height;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    const paths = images[currentIndex]?.smudgePaths || [];
+    paths.forEach(path => {
+      if (path.points.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(path.points[0].x, path.points[0].y);
+      path.points.forEach(p => ctx.lineTo(p.x, p.y));
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.lineWidth = 30; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.stroke();
+    });
+  }, [images, currentIndex, step]);
 
-  // --- 渲染 UI ---
-  return (
-    <div className="min-h-screen bg-neutral-900 text-white font-sans selection:bg-blue-500/30">
-      
-      {/* 顶部导航条 */}
-      <header className="flex items-center justify-between p-4 border-b border-neutral-800 bg-neutral-950">
-        <div className="flex items-center gap-2">
-          <ImageIcon className="text-blue-500" />
-          <h1 className="text-lg font-semibold tracking-wide">FlowCrop<span className="text-neutral-500 font-normal ml-2 text-sm">批量裁剪大师</span></h1>
+  if (step === 'upload') {
+    return (
+      <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-4">
+        <div className="flex items-center gap-3 mb-10">
+          <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-900/40">
+            <Crop size={24} />
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight">FlowCrop <span className="text-gray-500 font-light ml-1">批量裁剪大师</span></h1>
         </div>
+        <label className="w-full max-w-lg aspect-video bg-[#1A1A1A] border-2 border-dashed border-gray-700 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-[#222] transition-all group">
+          <Upload size={48} className="text-gray-500 group-hover:text-blue-500 transition-colors mb-4" />
+          <p className="text-xl font-medium mb-1">开始上传图片</p>
+          <p className="text-gray-500 text-sm">点击或拖拽，单次上限 30 张</p>
+          <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileUpload} />
+        </label>
+      </div>
+    );
+  }
+
+  const currentImage = images[currentIndex];
+
+  return (
+    <div className="h-screen bg-black text-white flex flex-col overflow-hidden select-none">
+      
+      {/* 顶部 */}
+      <div className="h-14 flex items-center justify-between px-4 bg-[#121212] border-b border-gray-800 shrink-0 z-50">
+        <div className="flex items-center gap-2 font-bold text-sm">
+           <div className="bg-blue-600 p-1 rounded-md"><Crop size={14} /></div> FlowCrop
+        </div>
+        <div className="bg-gray-800 px-3 py-1 rounded-full text-xs font-mono text-gray-300">
+          {currentIndex + 1} / {images.length}
+        </div>
+        <button onClick={() => setStep('upload')} className="text-xs text-gray-500 hover:text-white transition">退出</button>
+      </div>
+
+      {/* 比例 */}
+      <div className="h-12 flex items-center px-4 bg-[#121212] gap-3 overflow-x-auto border-b border-gray-800/50 shrink-0 no-scrollbar">
+        {ASPECT_RATIOS.map(ratio => (
+          <button 
+            key={ratio.label}
+            onClick={() => setAspectRatio(ratio.value)}
+            className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs transition ${aspectRatio === ratio.value ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-800'}`}
+          >
+            {ratio.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 工作区 */}
+      <div 
+        ref={containerRef}
+        className="flex-1 relative overflow-hidden bg-black touch-none"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <div className="absolute inset-0 flex items-center justify-center">
+          <img 
+            src={currentImage.url} 
+            draggable={false}
+            style={{ transform: `translate(${currentImage.transform.x}px, ${currentImage.transform.y}px) scale(${currentImage.transform.scale})` }}
+            className="max-w-full max-h-full object-contain pointer-events-none transition-transform duration-75"
+          />
+        </div>
+
+        <canvas ref={visualCanvasRef} className="absolute inset-0 pointer-events-none z-10" />
+
+        <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 shadow-[inset_0_0_100px_rgba(0,0,0,1)]" />
+          <div 
+            className="relative border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
+            style={{ width: aspectRatio ? '80%' : '90%', aspectRatio: aspectRatio || 'auto', maxHeight: aspectRatio ? '80%' : '90%' }}
+          >
+            <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
+              <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
+              <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
+              <div className="border-r border-white"></div><div className="border-r border-white"></div><div></div>
+            </div>
+            {/* 角标 */}
+            <div className="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-white rounded-tl-sm"></div>
+            <div className="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-white rounded-tr-sm"></div>
+            <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-white rounded-bl-sm"></div>
+            <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-white rounded-br-sm"></div>
+          </div>
+        </div>
+      </div>
+
+      {/* 底部控制 */}
+      <div className="bg-[#121212] border-t border-gray-800 p-4 pb-8 shrink-0 flex flex-col gap-4">
         
-        {step === 'edit' && (
-          <div className="flex items-center gap-4 text-sm text-neutral-400">
-            <span>进度: <strong className="text-white">{currentIndex + 1}</strong> / {images.length}</span>
-            <button 
-              onClick={() => {
-                if(window.confirm("确定要放弃当前进度并返回首页吗？")) {
-                  setStep('upload'); setImages([]);
-                }
-              }}
-              className="hover:text-red-400 transition-colors"
-            >
-              取消
+        <div className="flex items-center justify-between">
+          <div className="flex bg-[#1E1E1E] p-1 rounded-2xl">
+            <button onClick={() => setEditMode('move')} className={`p-3 rounded-xl transition ${editMode === 'move' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`} title="平移缩放"><Move size={22} /></button>
+            <button onClick={() => setEditMode('smudge')} className={`p-3 rounded-xl transition ${editMode === 'smudge' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`} title="去水印涂抹"><Eraser size={22} /></button>
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white" title="重置涂抹"><RefreshCw size={22} /></button>
+            <button onClick={handleSaveCurrent} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-500 rounded-xl font-medium transition shadow-lg shadow-green-900/20"><Save size={20} /> 保存当前</button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex gap-2">
+            <button onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))} disabled={currentIndex===0} className="w-12 h-12 flex items-center justify-center bg-[#1E1E1E] rounded-2xl disabled:opacity-20"><ChevronLeft /></button>
+            <button onClick={() => setCurrentIndex(Math.min(images.length-1, currentIndex + 1))} disabled={currentIndex===images.length-1} className="w-12 h-12 flex items-center justify-center bg-[#1E1E1E] rounded-2xl disabled:opacity-20"><ChevronRight /></button>
+          </div>
+          
+          <div className="flex gap-2 flex-1">
+            <button onClick={handleSaveAll} disabled={isExporting} className="flex-1 h-12 flex items-center justify-center gap-2 bg-gray-800 rounded-2xl text-sm font-medium hover:bg-gray-700 transition disabled:opacity-50">
+               {isExporting ? <RefreshCw className="animate-spin" /> : <ImageIcon size={18} />} 全部保存
+            </button>
+            <button onClick={handleExportZip} disabled={isExporting} className="flex-1 h-12 flex items-center justify-center gap-2 bg-blue-600 rounded-2xl text-sm font-bold hover:bg-blue-500 transition shadow-lg shadow-blue-900/30 disabled:opacity-50">
+               {isExporting ? <RefreshCw className="animate-spin" /> : <Download size={18} />} 导出 ZIP
             </button>
           </div>
-        )}
-      </header>
+        </div>
+      </div>
 
-      {/* 视图区域 */}
-      <main className="flex-1 flex flex-col h-[calc(100vh-65px)]">
-        
-        {/* --- 视图一：上传 --- */}
-        {step === 'upload' && (
-          <div className="flex-1 flex flex-col items-center justify-center p-6">
-            <div className="max-w-md w-full text-center">
-              <div className="bg-neutral-800/50 border-2 border-dashed border-neutral-700 rounded-2xl p-12 hover:border-blue-500/50 hover:bg-neutral-800 transition-all cursor-pointer relative">
-                <input 
-                  type="file" 
-                  multiple 
-                  accept="image/*" 
-                  onChange={handleUpload}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                />
-                <Upload className="w-12 h-12 mx-auto text-neutral-400 mb-4" />
-                <h3 className="text-xl font-medium mb-2">点击上传图片</h3>
-                <p className="text-neutral-500 text-sm">支持批量多选，单次最多 30 张</p>
-              </div>
-              
-              <div className="mt-8 text-left bg-neutral-800/30 p-4 rounded-xl">
-                <h4 className="flex items-center gap-2 text-sm font-medium text-neutral-300 mb-3"><Settings size={16}/> 预设导出选项</h4>
-                <div className="flex flex-col gap-3 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-neutral-400">导出格式</span>
-                    <select value={exportFormat} onChange={e => setExportFormat(e.target.value)} className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 outline-none">
-                      <option value="image/jpeg">JPG</option>
-                      <option value="image/png">PNG</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-neutral-400">导出画质</span>
-                    <select value={exportQuality} onChange={e => setExportQuality(Number(e.target.value))} className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 outline-none">
-                      <option value={1}>极高 (无损)</option>
-                      <option value={0.9}>高 (推荐)</option>
-                      <option value={0.7}>中</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+      {/* 手机端长按保存弹窗 */}
+      {showPreviewModal && (
+        <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-6" onClick={() => setShowPreviewModal(null)}>
+          <div className="absolute top-6 right-6 text-gray-400"><X size={32} /></div>
+          <p className="text-blue-400 mb-4 animate-pulse font-medium">✨ 请长按下方图片选择“保存到相册”</p>
+          <img src={showPreviewModal} className="max-w-full max-h-[70vh] rounded-lg shadow-2xl border border-white/10" onClick={e => e.stopPropagation()} />
+          <button className="mt-8 px-8 py-3 bg-white/10 rounded-full text-sm">点击空白处关闭</button>
+        </div>
+      )}
 
-        {/* --- 视图二：编辑流水线 --- */}
-        {step === 'edit' && currentImage && (
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* 操作栏 */}
-            <div className="flex flex-wrap items-center justify-between p-3 bg-neutral-900 border-b border-neutral-800 gap-4">
-              <div className="flex items-center gap-2 bg-neutral-950 p-1 rounded-lg">
-                {['1:1', '3:4', '4:3', '16:9', 'free'].map(ratio => (
-                  <button
-                    key={ratio}
-                    onClick={() => handleRatioChange({target: {value: ratio}})}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${globalRatio === ratio ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-white hover:bg-neutral-800'}`}
-                  >
-                    {ratio === 'free' ? '自由' : ratio}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex items-center gap-3">
-                 <button 
-                  onClick={() => setAutoFaceDetect(!autoFaceDetect)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors border ${autoFaceDetect ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'bg-transparent border-neutral-700 text-neutral-400'}`}
-                >
-                  <ScanFace size={14} /> AI 定位
-                </button>
-                <button onClick={handleReset} className="flex items-center gap-1 text-xs text-neutral-400 hover:text-white px-2">
-                  <RefreshCcw size={14} /> 重置
-                </button>
-              </div>
-            </div>
-
-            {/* 画布区域 */}
-            <div 
-              ref={containerRef}
-              className="flex-1 relative bg-black overflow-hidden flex items-center justify-center touch-none select-none"
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerLeave={onPointerUp}
-            >
-              {/* 待裁剪的图片 */}
-              <div 
-                className="absolute inset-0 flex items-center justify-center"
-                style={{
-                  transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale}) rotate(${transform.rotation}deg)`,
-                  transition: isDragging.current ? 'none' : 'transform 0.1s ease-out'
-                }}
-              >
-                <img 
-                  ref={imageRef}
-                  src={currentImage.url} 
-                  alt="target" 
-                  className="max-w-full max-h-full object-contain pointer-events-none"
-                  onLoad={(e) => {
-                    // 同步涂抹画布的大小
-                    if(smudgeCanvasRef.current) {
-                      smudgeCanvasRef.current.width = e.target.naturalWidth;
-                      smudgeCanvasRef.current.height = e.target.naturalHeight;
-                    }
-                  }}
-                />
-                {/* 涂抹层 */}
-                <canvas 
-                  ref={smudgeCanvasRef}
-                  className="absolute inset-0 w-full h-full pointer-events-none opacity-80"
-                  style={{ mixBlendMode: 'normal' }}
-                />
-              </div>
-
-              {/* 裁剪遮罩 (利用 CSS border 构建中空视觉) */}
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                 {/* 动态计算内部框的大小 */}
-                 {containerRef.current && (
-                    <div 
-                      className="border border-white/50 relative shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
-                      style={{
-                        width: getAspectSize(globalRatio, containerRef.current.clientWidth, containerRef.current.clientHeight).width,
-                        height: getAspectSize(globalRatio, containerRef.current.clientWidth, containerRef.current.clientHeight).height,
-                      }}
-                    >
-                      {/* 裁剪框九宫格辅助线 */}
-                      <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-30">
-                        <div className="border-r border-b border-white"></div>
-                        <div className="border-r border-b border-white"></div>
-                        <div className="border-b border-white"></div>
-                        <div className="border-r border-b border-white"></div>
-                        <div className="border-r border-b border-white"></div>
-                        <div className="border-b border-white"></div>
-                        <div className="border-r border-white"></div>
-                        <div className="border-r border-white"></div>
-                        <div></div>
-                      </div>
-                    </div>
-                 )}
-              </div>
-            </div>
-
-            {/* 底部工具与导航 */}
-            <div className="bg-neutral-950 p-4 border-t border-neutral-800 flex items-center justify-between">
-              
-              {/* 模式切换 */}
-              <div className="flex bg-neutral-900 rounded-lg p-1">
-                <button 
-                  onClick={() => setEditMode('move')}
-                  className={`p-2 rounded-md transition-colors ${editMode === 'move' ? 'bg-neutral-700 text-white' : 'text-neutral-500'}`}
-                  title="移动/缩放"
-                >
-                  <Move size={20} />
-                </button>
-                <button 
-                  onClick={() => setEditMode('smudge')}
-                  className={`p-2 rounded-md transition-colors ${editMode === 'smudge' ? 'bg-blue-600 text-white' : 'text-neutral-500'}`}
-                  title="涂抹去水印"
-                >
-                  <Brush size={20} />
-                </button>
-                <div className="w-px bg-neutral-800 mx-1"></div>
-                <button 
-                  onClick={() => setTransform(p => ({ ...p, rotation: p.rotation + 90 }))}
-                  className="p-2 text-neutral-500 hover:text-white transition-colors rounded-md"
-                  title="旋转 90 度"
-                >
-                  <RotateCw size={20} />
-                </button>
-              </div>
-
-              {/* 流水线控制 */}
-              <div className="flex gap-2">
-                <button 
-                  onClick={handlePrev}
-                  disabled={currentIndex === 0}
-                  className="flex items-center px-4 py-2 bg-neutral-900 text-neutral-300 rounded-lg hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium text-sm"
-                >
-                  <ChevronLeft size={16} className="mr-1" /> 上一张
-                </button>
-                <button 
-                  onClick={handleNext}
-                  className="flex items-center px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors font-medium shadow-lg shadow-blue-900/20 text-sm"
-                >
-                  {currentIndex === images.length - 1 ? '完成处理' : '下一张'} <ChevronRight size={16} className="ml-1" />
-                </button>
-              </div>
-
-            </div>
-          </div>
-        )}
-
-        {/* --- 视图三：导出 --- */}
-        {step === 'export' && (
-          <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-            <div className="bg-green-500/10 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
-              <CheckCircle2 className="text-green-500 w-10 h-10" />
-            </div>
-            <h2 className="text-2xl font-bold mb-2">处理完成！</h2>
-            <p className="text-neutral-400 mb-8">已成功处理 {images.length} 张图片</p>
-            
-            <button 
-              onClick={handleExportZip}
-              className="flex items-center justify-center gap-2 w-full max-w-xs py-4 bg-white text-black font-semibold rounded-xl hover:bg-neutral-200 transition-transform active:scale-95 text-lg"
-            >
-              <Download size={20} /> 一键打包下载 (ZIP)
-            </button>
-
-            <button 
-              onClick={() => { setStep('upload'); setImages([]); }}
-              className="mt-6 text-sm text-neutral-500 hover:text-white transition-colors"
-            >
-              处理新图片
-            </button>
-          </div>
-        )}
-
-      </main>
     </div>
   );
 }
