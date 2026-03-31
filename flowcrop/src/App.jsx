@@ -34,64 +34,84 @@ export default function App() {
     }
   }, []);
 
-  // 计算当前图片在当前比例下的最小缩放值，防止黑边
-  const getMinScale = () => {
-    if (!containerRef.current || !images[currentIndex]) return 0.1;
+  // --- 物理边界计算核心函数 ---
+  const getClampedTransform = (x, y, scale, imgData) => {
+    if (!containerRef.current || !imgData) return { x, y };
     
     const rect = containerRef.current.getBoundingClientRect();
+    // 裁剪框的尺寸
     const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
     const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
 
-    // 获取图片原始尺寸（在内存中临时创建获取）
-    const img = new Image();
-    img.src = images[currentIndex].url;
-    
-    // 由于图片在 CSS 中是 object-contain 放置的，我们需要计算它在容器内的“初始显示尺寸”
-    const imgRatio = images[currentIndex].width / images[currentIndex].height;
-    let initialDisplayWidth, initialDisplayHeight;
-
+    // 图片在 Object-Contain 下的初始显示尺寸
+    const imgRatio = imgData.width / imgData.height;
+    let initialW, initialH;
     if (imgRatio > rect.width / rect.height) {
-      initialDisplayWidth = rect.width;
-      initialDisplayHeight = rect.width / imgRatio;
+      initialW = rect.width;
+      initialH = rect.width / imgRatio;
     } else {
-      initialDisplayHeight = rect.height;
-      initialDisplayWidth = rect.height * imgRatio;
+      initialH = rect.height;
+      initialW = rect.height * imgRatio;
     }
 
-    // 最小缩放倍数 = 必须覆盖裁剪框所需的宽度或高度比例中的较大值
-    return Math.max(maskWidth / initialDisplayWidth, maskHeight / initialDisplayHeight);
+    // 当前缩放后的图片尺寸
+    const currentW = initialW * scale;
+    const currentH = initialH * scale;
+
+    // 计算 X 和 Y 的最大允许偏移量 (防止黑边)
+    // 原理：图片边缘不能进入裁剪框内部
+    const maxX = Math.max(0, (currentW - maskWidth) / 2);
+    const maxY = Math.max(0, (currentH - maskHeight) / 2);
+
+    return {
+      x: Math.max(-maxX, Math.min(x, maxX)),
+      y: Math.max(-maxY, Math.min(y, maxY))
+    };
   };
 
-  // 鼠标滚轮缩放拦截
+  const getMinScale = () => {
+    if (!containerRef.current || !images[currentIndex]) return 0.1;
+    const rect = containerRef.current.getBoundingClientRect();
+    const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
+    const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
+    const imgRatio = images[currentIndex].width / images[currentIndex].height;
+    let initialW, initialH;
+    if (imgRatio > rect.width / rect.height) {
+      initialW = rect.width; initialH = rect.width / imgRatio;
+    } else {
+      initialH = rect.height; initialW = rect.height * imgRatio;
+    }
+    return Math.max(maskWidth / initialW, maskHeight / initialH);
+  };
+
+  // 缩放修正
+  const handleWheel = (e) => {
+    if (editMode !== 'move') return;
+    e.preventDefault(); 
+    const delta = -e.deltaY * 0.002;
+    const minScale = getMinScale();
+    
+    setImages(prev => {
+      const newImages = [...prev];
+      const img = newImages[currentIndex];
+      const targetScale = Math.max(minScale, Math.min(img.transform.scale + delta, 5));
+      // 缩放后立即重新检查边界
+      const clamped = getClampedTransform(img.transform.x, img.transform.y, targetScale, img);
+      newImages[currentIndex].transform = { ...clamped, scale: targetScale };
+      return newImages;
+    });
+  };
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container || step !== 'edit') return;
-    const handleWheel = (e) => {
-      if (editMode !== 'move') return;
-      e.preventDefault(); 
-      const delta = -e.deltaY * 0.002;
-      const minScale = getMinScale();
-      
-      setImages(prev => {
-        const newImages = [...prev];
-        const t = newImages[currentIndex].transform;
-        const targetScale = t.scale + delta;
-        newImages[currentIndex].transform = { 
-          ...t, 
-          scale: Math.max(minScale, Math.min(targetScale, 5)) 
-        };
-        return newImages;
-      });
-    };
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, [step, currentIndex, editMode, aspectRatio]);
+  }, [step, currentIndex, editMode, aspectRatio, images]);
 
   const handleFileUpload = (e) => {
     const files = Array.from(e.target.files).slice(0, 30);
     if (files.length === 0) return;
-
-    // 预加载图片以获取宽高，用于后续计算 minScale
     const loadPromises = files.map(file => {
       return new Promise((resolve) => {
         const img = new Image();
@@ -99,17 +119,14 @@ export default function App() {
         img.onload = () => {
           resolve({
             id: Date.now() + Math.random(),
-            file,
-            url: img.src,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-            transform: { x: 0, y: 0, scale: 1 },
+            file, url: img.src,
+            width: img.naturalWidth, height: img.naturalHeight,
+            transform: { x: 0, y: 0, scale: 1.2 }, // 默认稍微放大一点点
             smudgePaths: []
           });
         };
       });
     });
-
     Promise.all(loadPromises).then(newImages => {
       setImages(newImages);
       setCurrentIndex(0);
@@ -154,10 +171,15 @@ export default function App() {
       if (activePointers.current.size === 1 && isDragging.current) {
         const dx = e.clientX - dragStart.current.x;
         const dy = e.clientY - dragStart.current.y;
+        
         setImages(prev => {
           const newImages = [...prev];
-          const t = newImages[currentIndex].transform;
-          newImages[currentIndex].transform = { ...t, x: t.x + dx, y: t.y + dy };
+          const img = newImages[currentIndex];
+          const targetX = img.transform.x + dx;
+          const targetY = img.transform.y + dy;
+          // 应用边界限位
+          const clamped = getClampedTransform(targetX, targetY, img.transform.scale, img);
+          newImages[currentIndex].transform = { ...img.transform, ...clamped };
           return newImages;
         });
         dragStart.current = { x: e.clientX, y: e.clientY };
@@ -165,11 +187,13 @@ export default function App() {
         const pts = Array.from(activePointers.current.values());
         const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
         const minScale = getMinScale();
-        const targetScale = pinchStartRef.current.initialScale * (dist / pinchStartRef.current.initialDist);
+        const targetScale = Math.max(minScale, Math.min(pinchStartRef.current.initialScale * (dist / pinchStartRef.current.initialDist), 5));
         
         setImages(prev => {
           const newImages = [...prev];
-          newImages[currentIndex].transform.scale = Math.max(minScale, Math.min(targetScale, 5));
+          const img = newImages[currentIndex];
+          const clamped = getClampedTransform(img.transform.x, img.transform.y, targetScale, img);
+          newImages[currentIndex].transform = { ...clamped, scale: targetScale };
           return newImages;
         });
       }
@@ -200,38 +224,27 @@ export default function App() {
         const canvas = document.createElement('canvas');
         const container = containerRef.current;
         const rect = container.getBoundingClientRect();
-        
         const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
         const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
-        
-        canvas.width = maskWidth * 2;
-        canvas.height = maskHeight * 2;
+        canvas.width = maskWidth * 2; canvas.height = maskHeight * 2;
         const ctx = canvas.getContext('2d');
-
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.save();
         ctx.translate(canvas.width/2, canvas.height/2);
         ctx.scale(item.transform.scale * 2, item.transform.scale * 2);
         ctx.translate(item.transform.x / item.transform.scale, item.transform.y / item.transform.scale);
-        
         const imgRatio = imgObj.width / imgObj.height;
         let drawW, drawH;
         if (imgRatio > (rect.width/rect.height)) {
-          drawW = rect.width;
-          drawH = rect.width / imgRatio;
+          drawW = rect.width; drawH = rect.width / imgRatio;
         } else {
-          drawH = rect.height;
-          drawW = rect.height * imgRatio;
+          drawH = rect.height; drawW = rect.height * imgRatio;
         }
         ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
-
         if (item.smudgePaths && item.smudgePaths.length > 0) {
           item.smudgePaths.forEach(path => {
             if (path.points.length < 2) return;
-            ctx.save();
-            ctx.beginPath();
+            ctx.save(); ctx.beginPath();
             const startX = (path.points[0].x - rect.width/2 - item.transform.x) / item.transform.scale;
             const startY = (path.points[0].y - rect.height/2 - item.transform.y) / item.transform.scale;
             ctx.moveTo(startX, startY);
@@ -240,18 +253,12 @@ export default function App() {
               const py = (path.points[i].y - rect.height/2 - item.transform.y) / item.transform.scale;
               ctx.lineTo(px, py);
             }
-            ctx.lineWidth = 30 / item.transform.scale;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            ctx.stroke();
-            ctx.clip();
-            ctx.filter = 'blur(15px)';
-            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
-            ctx.restore();
+            ctx.lineWidth = 30 / item.transform.scale; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+            ctx.stroke(); ctx.clip(); ctx.filter = 'blur(15px)';
+            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH); ctx.restore();
           });
         }
-        ctx.restore();
-        resolve(canvas);
+        ctx.restore(); resolve(canvas);
       };
     });
   };
@@ -259,14 +266,8 @@ export default function App() {
   const handleSaveCurrent = async () => {
     const canvas = await getCroppedCanvas(currentIndex);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    if (window.innerWidth < 768) {
-      setShowPreviewModal(dataUrl);
-    } else {
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `flowcrop_${Date.now()}.jpg`;
-      a.click();
-    }
+    if (window.innerWidth < 768) { setShowPreviewModal(dataUrl); } 
+    else { const a = document.createElement('a'); a.href = dataUrl; a.download = `flowcrop_${Date.now()}.jpg`; a.click(); }
   };
 
   const handleSaveAll = async () => {
@@ -274,10 +275,7 @@ export default function App() {
     for (let i = 0; i < images.length; i++) {
       const canvas = await getCroppedCanvas(i);
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `flowcrop_all_${i+1}.jpg`;
-      a.click();
+      const a = document.createElement('a'); a.href = dataUrl; a.download = `flowcrop_all_${i+1}.jpg`; a.click();
       await new Promise(r => setTimeout(r, 300));
     }
     setIsExporting(false);
@@ -294,10 +292,7 @@ export default function App() {
     }
     const content = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `FlowCrop_Pack_${Date.now()}.zip`;
-    a.click();
+    const a = document.createElement('a'); a.href = url; a.download = `FlowCrop_Pack_${Date.now()}.zip`; a.click();
     setIsExporting(false);
   };
 
@@ -308,15 +303,12 @@ export default function App() {
     const rect = canvas.parentElement.getBoundingClientRect();
     canvas.width = rect.width; canvas.height = rect.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
     const paths = images[currentIndex]?.smudgePaths || [];
     paths.forEach(path => {
       if (path.points.length < 2) return;
-      ctx.beginPath();
-      ctx.moveTo(path.points[0].x, path.points[0].y);
+      ctx.beginPath(); ctx.moveTo(path.points[0].x, path.points[0].y);
       path.points.forEach(p => ctx.lineTo(p.x, p.y));
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-      ctx.lineWidth = 30; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; ctx.lineWidth = 30; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       ctx.stroke();
     });
   }, [images, currentIndex, step]);
@@ -325,9 +317,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-4">
         <div className="flex items-center gap-3 mb-10">
-          <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-900/40">
-            <Crop size={24} />
-          </div>
+          <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-900/40"><Crop size={24} /></div>
           <h1 className="text-3xl font-bold tracking-tight">FlowCrop <span className="text-gray-500 font-light ml-1">批量裁剪大师</span></h1>
         </div>
         <label className="w-full max-w-lg aspect-video bg-[#1A1A1A] border-2 border-dashed border-gray-700 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-[#222] transition-all group">
@@ -361,14 +351,14 @@ export default function App() {
             key={ratio.label}
             onClick={() => {
               setAspectRatio(ratio.value);
-              // 当比例改变时，检查并强制修正缩放，防止露底
+              // 比例改变后，自动修正位置和缩放，防止黑边
               setTimeout(() => {
-                const min = getMinScale();
                 setImages(prev => {
                   const n = [...prev];
-                  if (n[currentIndex].transform.scale < min) {
-                    n[currentIndex].transform.scale = min;
-                  }
+                  const min = getMinScale();
+                  const targetScale = Math.max(min, n[currentIndex].transform.scale);
+                  const clamped = getClampedTransform(n[currentIndex].transform.x, n[currentIndex].transform.y, targetScale, n[currentIndex]);
+                  n[currentIndex].transform = { ...clamped, scale: targetScale };
                   return n;
                 });
               }, 10);
@@ -392,7 +382,7 @@ export default function App() {
           <img 
             src={currentImage.url} 
             draggable={false}
-            style={{ transform: `translate(${currentImage.transform.x}px, ${currentImage.transform.y}px) scale(${currentImage.transform.scale})` }}
+            style={{ transform: `translate(${currentImage.transform.x}px, ${currentImage.transform.y}px) scale(${currentImage.transform.scale})`, willChange: 'transform' }}
             className="max-w-full max-h-full object-contain pointer-events-none transition-transform duration-75"
           />
         </div>
@@ -402,7 +392,7 @@ export default function App() {
         <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60 shadow-[inset_0_0_100px_rgba(0,0,0,1)]" />
           <div 
-            className="relative border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
+            className="relative border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
             style={{ width: aspectRatio ? '80%' : '90%', aspectRatio: aspectRatio || 'auto', maxHeight: aspectRatio ? '80%' : '90%' }}
           >
             <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
@@ -422,12 +412,12 @@ export default function App() {
         
         <div className="flex items-center justify-between">
           <div className="flex bg-[#1E1E1E] p-1 rounded-2xl">
-            <button onClick={() => setEditMode('move')} className={`p-3 rounded-xl transition ${editMode === 'move' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`} title="平移缩放"><Move size={22} /></button>
-            <button onClick={() => setEditMode('smudge')} className={`p-3 rounded-xl transition ${editMode === 'smudge' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`} title="去水印涂抹"><Eraser size={22} /></button>
+            <button onClick={() => setEditMode('move')} className={`p-3 rounded-xl transition ${editMode === 'move' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`}><Move size={22} /></button>
+            <button onClick={() => setEditMode('smudge')} className={`p-3 rounded-xl transition ${editMode === 'smudge' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`}><Eraser size={22} /></button>
           </div>
 
           <div className="flex gap-2">
-            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale()}; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white" title="重置图片"><RefreshCw size={22} /></button>
+            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale()}; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white"><RefreshCw size={22} /></button>
             <button onClick={handleSaveCurrent} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-500 rounded-xl font-medium transition shadow-lg shadow-green-900/20"><Save size={20} /> 保存当前</button>
           </div>
         </div>
