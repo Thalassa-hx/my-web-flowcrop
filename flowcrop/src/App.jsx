@@ -6,6 +6,7 @@ const ASPECT_RATIOS = [
   { label: '3:4', value: 0.75 },
   { label: '4:3', value: 1.333 },
   { label: '16:9', value: 1.778 },
+  { label: '960:540', value: 1.7777777777777777 }, // 新增常用比例
   { label: '自由', value: null }
 ];
 
@@ -21,6 +22,7 @@ export default function App() {
   // 导出配置
   const [exportFormat, setExportFormat] = useState('image/jpeg');
   const [exportQuality, setExportQuality] = useState(0.9);
+  const [targetSize, setTargetSize] = useState('auto'); // 'auto' 或 '960x540'
 
   const containerRef = useRef(null);
   const visualCanvasRef = useRef(null);
@@ -38,11 +40,10 @@ export default function App() {
     }
   }, []);
 
-  // --- 核心工具函数：获取裁剪框在屏幕上的实际尺寸 ---
   const getMaskSize = () => {
     if (!containerRef.current) return { width: 0, height: 0 };
     const rect = containerRef.current.getBoundingClientRect();
-    const padding = 40; // 边距
+    const padding = 40; 
     const maxW = rect.width - padding * 2;
     const maxH = rect.height - padding * 2;
 
@@ -58,7 +59,6 @@ export default function App() {
     return { width: targetW, height: targetH };
   };
 
-  // --- 物理边界计算核心函数 ---
   const getClampedTransform = (x, y, scale, imgData) => {
     if (!containerRef.current || !imgData) return { x, y };
     const { width: maskWidth, height: maskHeight } = getMaskSize();
@@ -101,7 +101,7 @@ export default function App() {
   const handleWheel = (e) => {
     if (editMode !== 'move') return;
     e.preventDefault(); 
-    const delta = -e.deltaY * 0.0015; // 稍微调低滚轮灵敏度
+    const delta = -e.deltaY * 0.0015; 
     const minScale = getMinScale();
     
     setImages(prev => {
@@ -146,7 +146,6 @@ export default function App() {
     });
   };
 
-  // 比例切换后的修正
   const updateRatio = (val) => {
     setAspectRatio(val);
     setTimeout(() => {
@@ -161,7 +160,6 @@ export default function App() {
     }, 50);
   };
 
-  // --- 交互逻辑 ---
   const onPointerDown = (e) => {
     if (editMode !== 'move' && editMode !== 'smudge') return;
     e.target.setPointerCapture(e.pointerId);
@@ -252,13 +250,28 @@ export default function App() {
         const { width: maskWidth, height: maskHeight } = getMaskSize();
         const rect = containerRef.current.getBoundingClientRect();
         
-        canvas.width = maskWidth * 2; canvas.height = maskHeight * 2;
+        // 核心像素逻辑：如果选择了固定尺寸，则导出为 960x540
+        if (targetSize === '960x540') {
+          canvas.width = 960;
+          canvas.height = 540;
+        } else {
+          canvas.width = maskWidth * 2; 
+          canvas.height = maskHeight * 2;
+        }
+
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'black'; 
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 计算缩放比，将画布坐标映射到图片坐标
+        const exportScaleX = canvas.width / maskWidth;
+        const exportScaleY = canvas.height / maskHeight;
+
         ctx.save();
-        ctx.translate(canvas.width/2, canvas.height/2);
-        ctx.scale(item.transform.scale * 2, item.transform.scale * 2);
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(item.transform.scale * exportScaleX, item.transform.scale * exportScaleY);
         ctx.translate(item.transform.x / item.transform.scale, item.transform.y / item.transform.scale);
+        
         const imgRatio = imgObj.width / imgObj.height;
         let drawW, drawH;
         if (imgRatio > (rect.width/rect.height)) {
@@ -267,10 +280,12 @@ export default function App() {
           drawH = rect.height; drawW = rect.height * imgRatio;
         }
         ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
+
         if (item.smudgePaths && item.smudgePaths.length > 0) {
           item.smudgePaths.forEach(path => {
             if (path.points.length < 2) return;
-            ctx.save(); ctx.beginPath();
+            ctx.save(); 
+            ctx.beginPath();
             const startX = (path.points[0].x - rect.width/2 - item.transform.x) / item.transform.scale;
             const startY = (path.points[0].y - rect.height/2 - item.transform.y) / item.transform.scale;
             ctx.moveTo(startX, startY);
@@ -279,12 +294,18 @@ export default function App() {
               const py = (path.points[i].y - rect.height/2 - item.transform.y) / item.transform.scale;
               ctx.lineTo(px, py);
             }
-            ctx.lineWidth = 30 / item.transform.scale; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-            ctx.stroke(); ctx.clip(); ctx.filter = 'blur(15px)';
-            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH); ctx.restore();
+            ctx.lineWidth = 30 / item.transform.scale; 
+            ctx.lineCap = 'round'; 
+            ctx.lineJoin = 'round';
+            ctx.stroke(); 
+            ctx.clip(); 
+            ctx.filter = 'blur(15px)';
+            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH); 
+            ctx.restore();
           });
         }
-        ctx.restore(); resolve(canvas);
+        ctx.restore(); 
+        resolve(canvas);
       };
     });
   };
@@ -357,7 +378,7 @@ export default function App() {
 
           <div className="bg-[#1A1A1A] rounded-2xl p-6 border border-gray-800">
             <h4 className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-5"><Settings size={16}/> 导出设置预设</h4>
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-2 gap-6 mb-6">
               <div className="space-y-2">
                 <label className="text-xs text-gray-500">导出格式</label>
                 <select 
@@ -382,6 +403,22 @@ export default function App() {
                   <option value={0.7}>低 (70%)</option>
                 </select>
               </div>
+            </div>
+            {/* 新像素设置 */}
+            <div className="space-y-2">
+              <label className="text-xs text-gray-500">导出尺寸 (批量设置)</label>
+              <select 
+                value={targetSize} 
+                onChange={e => {
+                  setTargetSize(e.target.value);
+                  if(e.target.value === '960x540') updateRatio(1.7777777777777777);
+                }}
+                className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+              >
+                <option value="auto">自动 (原始高分辨率)</option>
+                <option value="960x540">固定像素 960 x 540 (常用)</option>
+              </select>
+              <p className="text-[10px] text-gray-600 mt-1">选择固定像素后，所有导出的图片宽度和高度将强制锁定。</p>
             </div>
           </div>
         </div>
