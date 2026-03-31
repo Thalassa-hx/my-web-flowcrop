@@ -18,6 +18,10 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [showPreviewModal, setShowPreviewModal] = useState(null); 
 
+  // 导出配置
+  const [exportFormat, setExportFormat] = useState('image/jpeg');
+  const [exportQuality, setExportQuality] = useState(0.9);
+
   const containerRef = useRef(null);
   const visualCanvasRef = useRef(null);
   const activePointers = useRef(new Map());
@@ -34,32 +38,43 @@ export default function App() {
     }
   }, []);
 
+  // --- 核心工具函数：获取裁剪框在屏幕上的实际尺寸 ---
+  const getMaskSize = () => {
+    if (!containerRef.current) return { width: 0, height: 0 };
+    const rect = containerRef.current.getBoundingClientRect();
+    const padding = 40; // 边距
+    const maxW = rect.width - padding * 2;
+    const maxH = rect.height - padding * 2;
+
+    if (!aspectRatio) return { width: maxW * 0.9, height: maxH * 0.9 };
+
+    let targetW = maxW * 0.8;
+    let targetH = targetW / aspectRatio;
+
+    if (targetH > maxH) {
+      targetH = maxH;
+      targetW = targetH * aspectRatio;
+    }
+    return { width: targetW, height: targetH };
+  };
+
   // --- 物理边界计算核心函数 ---
   const getClampedTransform = (x, y, scale, imgData) => {
     if (!containerRef.current || !imgData) return { x, y };
-    
+    const { width: maskWidth, height: maskHeight } = getMaskSize();
     const rect = containerRef.current.getBoundingClientRect();
-    // 裁剪框的尺寸
-    const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
-    const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
 
-    // 图片在 Object-Contain 下的初始显示尺寸
     const imgRatio = imgData.width / imgData.height;
     let initialW, initialH;
     if (imgRatio > rect.width / rect.height) {
-      initialW = rect.width;
-      initialH = rect.width / imgRatio;
+      initialW = rect.width; initialH = rect.width / imgRatio;
     } else {
-      initialH = rect.height;
-      initialW = rect.height * imgRatio;
+      initialH = rect.height; initialW = rect.height * imgRatio;
     }
 
-    // 当前缩放后的图片尺寸
     const currentW = initialW * scale;
     const currentH = initialH * scale;
 
-    // 计算 X 和 Y 的最大允许偏移量 (防止黑边)
-    // 原理：图片边缘不能进入裁剪框内部
     const maxX = Math.max(0, (currentW - maskWidth) / 2);
     const maxY = Math.max(0, (currentH - maskHeight) / 2);
 
@@ -72,8 +87,7 @@ export default function App() {
   const getMinScale = () => {
     if (!containerRef.current || !images[currentIndex]) return 0.1;
     const rect = containerRef.current.getBoundingClientRect();
-    const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
-    const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
+    const { width: maskWidth, height: maskHeight } = getMaskSize();
     const imgRatio = images[currentIndex].width / images[currentIndex].height;
     let initialW, initialH;
     if (imgRatio > rect.width / rect.height) {
@@ -84,18 +98,16 @@ export default function App() {
     return Math.max(maskWidth / initialW, maskHeight / initialH);
   };
 
-  // 缩放修正
   const handleWheel = (e) => {
     if (editMode !== 'move') return;
     e.preventDefault(); 
-    const delta = -e.deltaY * 0.002;
+    const delta = -e.deltaY * 0.0015; // 稍微调低滚轮灵敏度
     const minScale = getMinScale();
     
     setImages(prev => {
       const newImages = [...prev];
       const img = newImages[currentIndex];
       const targetScale = Math.max(minScale, Math.min(img.transform.scale + delta, 5));
-      // 缩放后立即重新检查边界
       const clamped = getClampedTransform(img.transform.x, img.transform.y, targetScale, img);
       newImages[currentIndex].transform = { ...clamped, scale: targetScale };
       return newImages;
@@ -121,7 +133,7 @@ export default function App() {
             id: Date.now() + Math.random(),
             file, url: img.src,
             width: img.naturalWidth, height: img.naturalHeight,
-            transform: { x: 0, y: 0, scale: 1.2 }, // 默认稍微放大一点点
+            transform: { x: 0, y: 0, scale: 1.2 }, 
             smudgePaths: []
           });
         };
@@ -134,6 +146,22 @@ export default function App() {
     });
   };
 
+  // 比例切换后的修正
+  const updateRatio = (val) => {
+    setAspectRatio(val);
+    setTimeout(() => {
+      setImages(prev => {
+        const n = [...prev];
+        const min = getMinScale();
+        const targetScale = Math.max(min, n[currentIndex].transform.scale);
+        const clamped = getClampedTransform(n[currentIndex].transform.x, n[currentIndex].transform.y, targetScale, n[currentIndex]);
+        n[currentIndex].transform = { ...clamped, scale: targetScale };
+        return n;
+      });
+    }, 50);
+  };
+
+  // --- 交互逻辑 ---
   const onPointerDown = (e) => {
     if (editMode !== 'move' && editMode !== 'smudge') return;
     e.target.setPointerCapture(e.pointerId);
@@ -177,7 +205,6 @@ export default function App() {
           const img = newImages[currentIndex];
           const targetX = img.transform.x + dx;
           const targetY = img.transform.y + dy;
-          // 应用边界限位
           const clamped = getClampedTransform(targetX, targetY, img.transform.scale, img);
           newImages[currentIndex].transform = { ...img.transform, ...clamped };
           return newImages;
@@ -222,10 +249,9 @@ export default function App() {
       imgObj.src = item.url;
       imgObj.onload = () => {
         const canvas = document.createElement('canvas');
-        const container = containerRef.current;
-        const rect = container.getBoundingClientRect();
-        const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
-        const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
+        const { width: maskWidth, height: maskHeight } = getMaskSize();
+        const rect = containerRef.current.getBoundingClientRect();
+        
         canvas.width = maskWidth * 2; canvas.height = maskHeight * 2;
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = 'black'; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -265,18 +291,18 @@ export default function App() {
 
   const handleSaveCurrent = async () => {
     const canvas = await getCroppedCanvas(currentIndex);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const dataUrl = canvas.toDataURL(exportFormat, exportQuality);
     if (window.innerWidth < 768) { setShowPreviewModal(dataUrl); } 
-    else { const a = document.createElement('a'); a.href = dataUrl; a.download = `flowcrop_${Date.now()}.jpg`; a.click(); }
+    else { const a = document.createElement('a'); a.href = dataUrl; a.download = `flowcrop_${Date.now()}.${exportFormat.split('/')[1]}`; a.click(); }
   };
 
   const handleSaveAll = async () => {
     setIsExporting(true);
     for (let i = 0; i < images.length; i++) {
       const canvas = await getCroppedCanvas(i);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-      const a = document.createElement('a'); a.href = dataUrl; a.download = `flowcrop_all_${i+1}.jpg`; a.click();
-      await new Promise(r => setTimeout(r, 300));
+      const dataUrl = canvas.toDataURL(exportFormat, exportQuality);
+      const a = document.createElement('a'); a.href = dataUrl; a.download = `flowcrop_all_${i+1}.${exportFormat.split('/')[1]}`; a.click();
+      await new Promise(r => setTimeout(r, 500));
     }
     setIsExporting(false);
   };
@@ -287,8 +313,8 @@ export default function App() {
     const zip = new window.JSZip();
     for (let i = 0; i < images.length; i++) {
       const canvas = await getCroppedCanvas(i);
-      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.9));
-      zip.file(`cropped_${i + 1}.jpg`, blob);
+      const blob = await new Promise(res => canvas.toBlob(res, exportFormat, exportQuality));
+      zip.file(`cropped_${i + 1}.${exportFormat.split('/')[1]}`, blob);
     }
     const content = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(content);
@@ -316,21 +342,55 @@ export default function App() {
   if (step === 'upload') {
     return (
       <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-4">
-        <div className="flex items-center gap-3 mb-10">
+        <div className="flex items-center gap-3 mb-8">
           <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-900/40"><Crop size={24} /></div>
           <h1 className="text-3xl font-bold tracking-tight">FlowCrop <span className="text-gray-500 font-light ml-1">批量裁剪大师</span></h1>
         </div>
-        <label className="w-full max-w-lg aspect-video bg-[#1A1A1A] border-2 border-dashed border-gray-700 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-[#222] transition-all group">
-          <Upload size={48} className="text-gray-500 group-hover:text-blue-500 transition-colors mb-4" />
-          <p className="text-xl font-medium mb-1">开始上传图片</p>
-          <p className="text-gray-500 text-sm">点击或拖拽，单次上限 30 张</p>
-          <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileUpload} />
-        </label>
+
+        <div className="w-full max-w-lg space-y-6">
+          <label className="w-full aspect-video bg-[#1A1A1A] border-2 border-dashed border-gray-700 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-[#222] transition-all group">
+            <Upload size={48} className="text-gray-500 group-hover:text-blue-500 transition-colors mb-4" />
+            <p className="text-xl font-medium mb-1">点击上传图片</p>
+            <p className="text-gray-500 text-sm">支持批量多选，单次上限 30 张</p>
+            <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileUpload} />
+          </label>
+
+          <div className="bg-[#1A1A1A] rounded-2xl p-6 border border-gray-800">
+            <h4 className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-5"><Settings size={16}/> 导出设置预设</h4>
+            <div className="grid grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs text-gray-500">导出格式</label>
+                <select 
+                  value={exportFormat} 
+                  onChange={e => setExportFormat(e.target.value)}
+                  className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+                >
+                  <option value="image/jpeg">JPG (推荐)</option>
+                  <option value="image/png">PNG (透明/无损)</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-gray-500">导出画质</label>
+                <select 
+                  value={exportQuality} 
+                  onChange={e => setExportQuality(parseFloat(e.target.value))}
+                  className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+                >
+                  <option value={1}>极高 (100%)</option>
+                  <option value={0.9}>高 (90%)</option>
+                  <option value={0.8}>中 (80%)</option>
+                  <option value={0.7}>低 (70%)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   const currentImage = images[currentIndex];
+  const { width: maskWidth, height: maskHeight } = getMaskSize();
 
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden select-none">
@@ -349,21 +409,8 @@ export default function App() {
         {ASPECT_RATIOS.map(ratio => (
           <button 
             key={ratio.label}
-            onClick={() => {
-              setAspectRatio(ratio.value);
-              // 比例改变后，自动修正位置和缩放，防止黑边
-              setTimeout(() => {
-                setImages(prev => {
-                  const n = [...prev];
-                  const min = getMinScale();
-                  const targetScale = Math.max(min, n[currentIndex].transform.scale);
-                  const clamped = getClampedTransform(n[currentIndex].transform.x, n[currentIndex].transform.y, targetScale, n[currentIndex]);
-                  n[currentIndex].transform = { ...clamped, scale: targetScale };
-                  return n;
-                });
-              }, 10);
-            }}
-            className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs transition ${aspectRatio === ratio.value ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-800'}`}
+            onClick={() => updateRatio(ratio.value)}
+            className={`whitespace-nowrap px-6 py-1.5 rounded-full text-xs transition ${aspectRatio === ratio.value ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-800'}`}
           >
             {ratio.label}
           </button>
@@ -392,18 +439,22 @@ export default function App() {
         <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60 shadow-[inset_0_0_100px_rgba(0,0,0,1)]" />
           <div 
-            className="relative border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
-            style={{ width: aspectRatio ? '80%' : '90%', aspectRatio: aspectRatio || 'auto', maxHeight: aspectRatio ? '80%' : '90%' }}
+            className="relative border-2 border-white/60 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
+            style={{ 
+              width: maskWidth || '80%', 
+              height: maskHeight || '80%', 
+              transition: 'all 0.15s ease-out' 
+            }}
           >
             <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
               <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
               <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
               <div className="border-r border-white"></div><div className="border-r border-white"></div><div></div>
             </div>
-            <div className="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-white rounded-tl-sm"></div>
-            <div className="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-white rounded-tr-sm"></div>
-            <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-white rounded-bl-sm"></div>
-            <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-white rounded-br-sm"></div>
+            <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-white rounded-tl-sm"></div>
+            <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-white rounded-tr-sm"></div>
+            <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-white rounded-bl-sm"></div>
+            <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-white rounded-br-sm"></div>
           </div>
         </div>
       </div>
