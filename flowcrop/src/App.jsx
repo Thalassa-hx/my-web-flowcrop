@@ -16,7 +16,7 @@ export default function App() {
   const [aspectRatio, setAspectRatio] = useState(1.778); 
   const [editMode, setEditMode] = useState('move'); 
   const [isExporting, setIsExporting] = useState(false);
-  const [showPreviewModal, setShowPreviewModal] = useState(null); // 用于手机端长按保存
+  const [showPreviewModal, setShowPreviewModal] = useState(null); 
 
   const containerRef = useRef(null);
   const visualCanvasRef = useRef(null);
@@ -25,7 +25,6 @@ export default function App() {
   const dragStart = useRef({ x: 0, y: 0 });
   const isDragging = useRef(false);
 
-  // 动态加载库
   useEffect(() => {
     if (!window.JSZip) {
       const script = document.createElement('script');
@@ -35,7 +34,35 @@ export default function App() {
     }
   }, []);
 
-  // 阻止默认缩放
+  // 计算当前图片在当前比例下的最小缩放值，防止黑边
+  const getMinScale = () => {
+    if (!containerRef.current || !images[currentIndex]) return 0.1;
+    
+    const rect = containerRef.current.getBoundingClientRect();
+    const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
+    const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
+
+    // 获取图片原始尺寸（在内存中临时创建获取）
+    const img = new Image();
+    img.src = images[currentIndex].url;
+    
+    // 由于图片在 CSS 中是 object-contain 放置的，我们需要计算它在容器内的“初始显示尺寸”
+    const imgRatio = images[currentIndex].width / images[currentIndex].height;
+    let initialDisplayWidth, initialDisplayHeight;
+
+    if (imgRatio > rect.width / rect.height) {
+      initialDisplayWidth = rect.width;
+      initialDisplayHeight = rect.width / imgRatio;
+    } else {
+      initialDisplayHeight = rect.height;
+      initialDisplayWidth = rect.height * imgRatio;
+    }
+
+    // 最小缩放倍数 = 必须覆盖裁剪框所需的宽度或高度比例中的较大值
+    return Math.max(maskWidth / initialDisplayWidth, maskHeight / initialDisplayHeight);
+  };
+
+  // 鼠标滚轮缩放拦截
   useEffect(() => {
     const container = containerRef.current;
     if (!container || step !== 'edit') return;
@@ -43,33 +70,53 @@ export default function App() {
       if (editMode !== 'move') return;
       e.preventDefault(); 
       const delta = -e.deltaY * 0.002;
+      const minScale = getMinScale();
+      
       setImages(prev => {
         const newImages = [...prev];
         const t = newImages[currentIndex].transform;
-        newImages[currentIndex].transform = { ...t, scale: Math.max(0.1, Math.min(t.scale + delta, 5)) };
+        const targetScale = t.scale + delta;
+        newImages[currentIndex].transform = { 
+          ...t, 
+          scale: Math.max(minScale, Math.min(targetScale, 5)) 
+        };
         return newImages;
       });
     };
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, [step, currentIndex, editMode]);
+  }, [step, currentIndex, editMode, aspectRatio]);
 
   const handleFileUpload = (e) => {
     const files = Array.from(e.target.files).slice(0, 30);
     if (files.length === 0) return;
-    const newImages = files.map((file, index) => ({
-      id: Date.now() + index,
-      file,
-      url: URL.createObjectURL(file),
-      transform: { x: 0, y: 0, scale: 1 },
-      smudgePaths: []
-    }));
-    setImages(newImages);
-    setCurrentIndex(0);
-    setStep('edit');
+
+    // 预加载图片以获取宽高，用于后续计算 minScale
+    const loadPromises = files.map(file => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.src = URL.createObjectURL(file);
+        img.onload = () => {
+          resolve({
+            id: Date.now() + Math.random(),
+            file,
+            url: img.src,
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+            transform: { x: 0, y: 0, scale: 1 },
+            smudgePaths: []
+          });
+        };
+      });
+    });
+
+    Promise.all(loadPromises).then(newImages => {
+      setImages(newImages);
+      setCurrentIndex(0);
+      setStep('edit');
+    });
   };
 
-  // --- 交互逻辑 ---
   const onPointerDown = (e) => {
     if (editMode !== 'move' && editMode !== 'smudge') return;
     e.target.setPointerCapture(e.pointerId);
@@ -117,10 +164,12 @@ export default function App() {
       } else if (activePointers.current.size === 2 && pinchStartRef.current) {
         const pts = Array.from(activePointers.current.values());
         const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-        const scale = pinchStartRef.current.initialScale * (dist / pinchStartRef.current.initialDist);
+        const minScale = getMinScale();
+        const targetScale = pinchStartRef.current.initialScale * (dist / pinchStartRef.current.initialDist);
+        
         setImages(prev => {
           const newImages = [...prev];
-          newImages[currentIndex].transform.scale = Math.max(0.1, Math.min(scale, 5));
+          newImages[currentIndex].transform.scale = Math.max(minScale, Math.min(targetScale, 5));
           return newImages;
         });
       }
@@ -142,7 +191,6 @@ export default function App() {
     if (activePointers.current.size === 0) isDragging.current = false;
   };
 
-  // --- 核心渲染逻辑：生成裁剪结果 ---
   const getCroppedCanvas = (index) => {
     return new Promise((resolve) => {
       const imgObj = new Image();
@@ -153,25 +201,21 @@ export default function App() {
         const container = containerRef.current;
         const rect = container.getBoundingClientRect();
         
-        // 计算裁剪区域 (基于 UI 中白色框的比例)
         const maskWidth = rect.width * (aspectRatio ? 0.8 : 0.9);
         const maskHeight = aspectRatio ? maskWidth / aspectRatio : rect.height * 0.9;
         
-        canvas.width = maskWidth * 2; // 双倍分辨率保证清晰
+        canvas.width = maskWidth * 2;
         canvas.height = maskHeight * 2;
         const ctx = canvas.getContext('2d');
 
-        // 绘制背景
         ctx.fillStyle = 'black';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // 应用变换
         ctx.save();
         ctx.translate(canvas.width/2, canvas.height/2);
         ctx.scale(item.transform.scale * 2, item.transform.scale * 2);
         ctx.translate(item.transform.x / item.transform.scale, item.transform.y / item.transform.scale);
         
-        // 绘制图片
         const imgRatio = imgObj.width / imgObj.height;
         let drawW, drawH;
         if (imgRatio > (rect.width/rect.height)) {
@@ -183,13 +227,10 @@ export default function App() {
         }
         ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
 
-        // --- 应用去水印模糊 ---
         if (item.smudgePaths && item.smudgePaths.length > 0) {
           item.smudgePaths.forEach(path => {
             if (path.points.length < 2) return;
-            
             ctx.save();
-            // 1. 创建涂抹路径作为裁剪区
             ctx.beginPath();
             const startX = (path.points[0].x - rect.width/2 - item.transform.x) / item.transform.scale;
             const startY = (path.points[0].y - rect.height/2 - item.transform.y) / item.transform.scale;
@@ -204,26 +245,20 @@ export default function App() {
             ctx.lineJoin = 'round';
             ctx.stroke();
             ctx.clip();
-
-            // 2. 在裁剪区内绘制模糊的图片
             ctx.filter = 'blur(15px)';
             ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH);
             ctx.restore();
           });
         }
-
         ctx.restore();
         resolve(canvas);
       };
     });
   };
 
-  // 保存单张
   const handleSaveCurrent = async () => {
     const canvas = await getCroppedCanvas(currentIndex);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    
-    // 如果是手机端，显示预览大图提示长按保存
     if (window.innerWidth < 768) {
       setShowPreviewModal(dataUrl);
     } else {
@@ -234,7 +269,6 @@ export default function App() {
     }
   };
 
-  // 一键全部保存 (循环触发)
   const handleSaveAll = async () => {
     setIsExporting(true);
     for (let i = 0; i < images.length; i++) {
@@ -244,12 +278,11 @@ export default function App() {
       a.href = dataUrl;
       a.download = `flowcrop_all_${i+1}.jpg`;
       a.click();
-      await new Promise(r => setTimeout(r, 300)); // 间隔防止浏览器拦截
+      await new Promise(r => setTimeout(r, 300));
     }
     setIsExporting(false);
   };
 
-  // 打包 ZIP
   const handleExportZip = async () => {
     if (!window.JSZip) return;
     setIsExporting(true);
@@ -268,7 +301,6 @@ export default function App() {
     setIsExporting(false);
   };
 
-  // --- 实时预览绘制 ---
   useEffect(() => {
     if (step !== 'edit' || !visualCanvasRef.current) return;
     const canvas = visualCanvasRef.current;
@@ -313,7 +345,6 @@ export default function App() {
   return (
     <div className="h-screen bg-black text-white flex flex-col overflow-hidden select-none">
       
-      {/* 顶部 */}
       <div className="h-14 flex items-center justify-between px-4 bg-[#121212] border-b border-gray-800 shrink-0 z-50">
         <div className="flex items-center gap-2 font-bold text-sm">
            <div className="bg-blue-600 p-1 rounded-md"><Crop size={14} /></div> FlowCrop
@@ -324,12 +355,24 @@ export default function App() {
         <button onClick={() => setStep('upload')} className="text-xs text-gray-500 hover:text-white transition">退出</button>
       </div>
 
-      {/* 比例 */}
       <div className="h-12 flex items-center px-4 bg-[#121212] gap-3 overflow-x-auto border-b border-gray-800/50 shrink-0 no-scrollbar">
         {ASPECT_RATIOS.map(ratio => (
           <button 
             key={ratio.label}
-            onClick={() => setAspectRatio(ratio.value)}
+            onClick={() => {
+              setAspectRatio(ratio.value);
+              // 当比例改变时，检查并强制修正缩放，防止露底
+              setTimeout(() => {
+                const min = getMinScale();
+                setImages(prev => {
+                  const n = [...prev];
+                  if (n[currentIndex].transform.scale < min) {
+                    n[currentIndex].transform.scale = min;
+                  }
+                  return n;
+                });
+              }, 10);
+            }}
             className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs transition ${aspectRatio === ratio.value ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-800'}`}
           >
             {ratio.label}
@@ -337,7 +380,6 @@ export default function App() {
         ))}
       </div>
 
-      {/* 工作区 */}
       <div 
         ref={containerRef}
         className="flex-1 relative overflow-hidden bg-black touch-none"
@@ -368,7 +410,6 @@ export default function App() {
               <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
               <div className="border-r border-white"></div><div className="border-r border-white"></div><div></div>
             </div>
-            {/* 角标 */}
             <div className="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-white rounded-tl-sm"></div>
             <div className="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-white rounded-tr-sm"></div>
             <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-white rounded-bl-sm"></div>
@@ -377,7 +418,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* 底部控制 */}
       <div className="bg-[#121212] border-t border-gray-800 p-4 pb-8 shrink-0 flex flex-col gap-4">
         
         <div className="flex items-center justify-between">
@@ -387,7 +427,7 @@ export default function App() {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white" title="重置涂抹"><RefreshCw size={22} /></button>
+            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale()}; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white" title="重置图片"><RefreshCw size={22} /></button>
             <button onClick={handleSaveCurrent} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-500 rounded-xl font-medium transition shadow-lg shadow-green-900/20"><Save size={20} /> 保存当前</button>
           </div>
         </div>
@@ -409,7 +449,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* 手机端长按保存弹窗 */}
       {showPreviewModal && (
         <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-6" onClick={() => setShowPreviewModal(null)}>
           <div className="absolute top-6 right-6 text-gray-400"><X size={32} /></div>
