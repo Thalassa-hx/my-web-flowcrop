@@ -6,7 +6,7 @@ const ASPECT_RATIOS = [
   { label: '3:4', value: 0.75 },
   { label: '4:3', value: 1.333 },
   { label: '16:9', value: 1.778 },
-  { label: '960:540', value: 1.7777777777777777 }, // 新增常用比例
+  { label: '960:540', value: 960 / 540 }, // 精确比例
   { label: '自由', value: null }
 ];
 
@@ -40,6 +40,7 @@ export default function App() {
     }
   }, []);
 
+  // 获取裁剪框在容器内的像素尺寸
   const getMaskSize = () => {
     if (!containerRef.current) return { width: 0, height: 0 };
     const rect = containerRef.current.getBoundingClientRect();
@@ -59,6 +60,7 @@ export default function App() {
     return { width: targetW, height: targetH };
   };
 
+  // 物理碰撞检测：防止露出黑边
   const getClampedTransform = (x, y, scale, imgData) => {
     if (!containerRef.current || !imgData) return { x, y };
     const { width: maskWidth, height: maskHeight } = getMaskSize();
@@ -84,11 +86,12 @@ export default function App() {
     };
   };
 
-  const getMinScale = () => {
-    if (!containerRef.current || !images[currentIndex]) return 0.1;
+  // 获取防止黑边的最小缩放倍数
+  const getMinScale = (imgIdx) => {
+    if (!containerRef.current || !images[imgIdx]) return 0.1;
     const rect = containerRef.current.getBoundingClientRect();
     const { width: maskWidth, height: maskHeight } = getMaskSize();
-    const imgRatio = images[currentIndex].width / images[currentIndex].height;
+    const imgRatio = images[imgIdx].width / images[imgIdx].height;
     let initialW, initialH;
     if (imgRatio > rect.width / rect.height) {
       initialW = rect.width; initialH = rect.width / imgRatio;
@@ -102,9 +105,10 @@ export default function App() {
     if (editMode !== 'move') return;
     e.preventDefault(); 
     const delta = -e.deltaY * 0.0015; 
-    const minScale = getMinScale();
+    const minScale = getMinScale(currentIndex);
     
     setImages(prev => {
+      if (prev.length === 0) return prev;
       const newImages = [...prev];
       const img = newImages[currentIndex];
       const targetScale = Math.max(minScale, Math.min(img.transform.scale + delta, 5));
@@ -146,12 +150,16 @@ export default function App() {
     });
   };
 
+  // 比例切换后的修正（增加安全判断）
   const updateRatio = (val) => {
     setAspectRatio(val);
+    if (images.length === 0) return; // 如果没图片，只改比例不操作图片
+
     setTimeout(() => {
       setImages(prev => {
+        if (prev.length === 0) return prev;
         const n = [...prev];
-        const min = getMinScale();
+        const min = getMinScale(currentIndex);
         const targetScale = Math.max(min, n[currentIndex].transform.scale);
         const clamped = getClampedTransform(n[currentIndex].transform.x, n[currentIndex].transform.y, targetScale, n[currentIndex]);
         n[currentIndex].transform = { ...clamped, scale: targetScale };
@@ -211,7 +219,7 @@ export default function App() {
       } else if (activePointers.current.size === 2 && pinchStartRef.current) {
         const pts = Array.from(activePointers.current.values());
         const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-        const minScale = getMinScale();
+        const minScale = getMinScale(currentIndex);
         const targetScale = Math.max(minScale, Math.min(pinchStartRef.current.initialScale * (dist / pinchStartRef.current.initialDist), 5));
         
         setImages(prev => {
@@ -250,7 +258,6 @@ export default function App() {
         const { width: maskWidth, height: maskHeight } = getMaskSize();
         const rect = containerRef.current.getBoundingClientRect();
         
-        // 核心像素逻辑：如果选择了固定尺寸，则导出为 960x540
         if (targetSize === '960x540') {
           canvas.width = 960;
           canvas.height = 540;
@@ -263,7 +270,6 @@ export default function App() {
         ctx.fillStyle = 'black'; 
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // 计算缩放比，将画布坐标映射到图片坐标
         const exportScaleX = canvas.width / maskWidth;
         const exportScaleY = canvas.height / maskHeight;
 
@@ -284,8 +290,7 @@ export default function App() {
         if (item.smudgePaths && item.smudgePaths.length > 0) {
           item.smudgePaths.forEach(path => {
             if (path.points.length < 2) return;
-            ctx.save(); 
-            ctx.beginPath();
+            ctx.save(); ctx.beginPath();
             const startX = (path.points[0].x - rect.width/2 - item.transform.x) / item.transform.scale;
             const startY = (path.points[0].y - rect.height/2 - item.transform.y) / item.transform.scale;
             ctx.moveTo(startX, startY);
@@ -295,13 +300,9 @@ export default function App() {
               ctx.lineTo(px, py);
             }
             ctx.lineWidth = 30 / item.transform.scale; 
-            ctx.lineCap = 'round'; 
-            ctx.lineJoin = 'round';
-            ctx.stroke(); 
-            ctx.clip(); 
-            ctx.filter = 'blur(15px)';
-            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH); 
-            ctx.restore();
+            ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+            ctx.stroke(); ctx.clip(); ctx.filter = 'blur(15px)';
+            ctx.drawImage(imgObj, -drawW/2, -drawH/2, drawW, drawH); ctx.restore();
           });
         }
         ctx.restore(); 
@@ -404,21 +405,20 @@ export default function App() {
                 </select>
               </div>
             </div>
-            {/* 新像素设置 */}
             <div className="space-y-2">
               <label className="text-xs text-gray-500">导出尺寸 (批量设置)</label>
               <select 
                 value={targetSize} 
                 onChange={e => {
-                  setTargetSize(e.target.value);
-                  if(e.target.value === '960x540') updateRatio(1.7777777777777777);
+                  const val = e.target.value;
+                  setTargetSize(val);
+                  if(val === '960x540') setAspectRatio(960/540);
                 }}
                 className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
               >
                 <option value="auto">自动 (原始高分辨率)</option>
                 <option value="960x540">固定像素 960 x 540 (常用)</option>
               </select>
-              <p className="text-[10px] text-gray-600 mt-1">选择固定像素后，所有导出的图片宽度和高度将强制锁定。</p>
             </div>
           </div>
         </div>
@@ -477,11 +477,7 @@ export default function App() {
           <div className="absolute inset-0 bg-black/60 shadow-[inset_0_0_100px_rgba(0,0,0,1)]" />
           <div 
             className="relative border-2 border-white/60 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
-            style={{ 
-              width: maskWidth || '80%', 
-              height: maskHeight || '80%', 
-              transition: 'all 0.15s ease-out' 
-            }}
+            style={{ width: maskWidth || '80%', height: maskHeight || '80%', transition: 'all 0.15s ease-out' }}
           >
             <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
               <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
@@ -505,7 +501,7 @@ export default function App() {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale()}; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white"><RefreshCw size={22} /></button>
+            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale(currentIndex)}; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white"><RefreshCw size={22} /></button>
             <button onClick={handleSaveCurrent} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-500 rounded-xl font-medium transition shadow-lg shadow-green-900/20"><Save size={20} /> 保存当前</button>
           </div>
         </div>
