@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Download, Settings, RefreshCw, ChevronLeft, ChevronRight, Crop, Move, Eraser, Save, Image as ImageIcon, X, Sparkles, Layers } from 'lucide-react';
+import { Upload, Download, Settings, RefreshCw, ChevronLeft, ChevronRight, Crop, Move, Eraser, Save, Image as ImageIcon, X, Sparkles } from 'lucide-react';
 
 const ASPECT_RATIOS = [
   { label: '1:1', value: 1 },
@@ -14,22 +14,32 @@ export default function App() {
   const [step, setStep] = useState('upload'); 
   const [images, setImages] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  
+  // 默认设置为用户习惯的配置
   const [aspectRatio, setAspectRatio] = useState(960 / 540); 
   const [editMode, setEditMode] = useState('move'); 
   const [isExporting, setIsExporting] = useState(false);
   const [showPreviewModal, setShowPreviewModal] = useState(null); 
 
-  // 导出配置
+  // 默认导出配置
   const [exportFormat, setExportFormat] = useState('image/png');
   const [exportQuality, setExportQuality] = useState(1);
   const [targetSize, setTargetSize] = useState('960x540'); 
 
   const containerRef = useRef(null);
+  const safeAreaRef = useRef(null); // 新增：纯粹用于计算坐标和尺寸的安全区
   const visualCanvasRef = useRef(null);
   const activePointers = useRef(new Map());
   const pinchStartRef = useRef(null);
   const dragStart = useRef({ x: 0, y: 0 });
   const isDragging = useRef(false);
+
+  // 强制窗口尺寸改变时重新渲染以更新裁剪框
+  useEffect(() => {
+    const handleResize = () => setImages(prev => [...prev]);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (!window.JSZip) {
@@ -40,16 +50,18 @@ export default function App() {
     }
   }, []);
 
+  // 基于安全区计算裁剪框的尺寸
   const getMaskSize = () => {
-    if (!containerRef.current) return { width: 0, height: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    const padding = 40; 
-    const maxW = rect.width - padding * 2;
-    const maxH = rect.height - padding * 2;
+    if (!safeAreaRef.current) return { width: 0, height: 0 };
+    const rect = safeAreaRef.current.getBoundingClientRect();
+    const paddingX = window.innerWidth < 768 ? 20 : 40; 
+    const paddingY = window.innerWidth < 768 ? 20 : 40; 
+    const maxW = rect.width - paddingX * 2;
+    const maxH = rect.height - paddingY * 2;
 
-    if (!aspectRatio) return { width: maxW * 0.9, height: maxH * 0.9 };
+    if (!aspectRatio) return { width: maxW, height: maxH };
 
-    let targetW = maxW * 0.8;
+    let targetW = maxW;
     let targetH = targetW / aspectRatio;
 
     if (targetH > maxH) {
@@ -59,10 +71,11 @@ export default function App() {
     return { width: targetW, height: targetH };
   };
 
+  // 物理碰撞检测：严格基于安全区
   const getClampedTransform = (x, y, scale, imgData) => {
-    if (!containerRef.current || !imgData) return { x, y };
+    if (!safeAreaRef.current || !imgData) return { x, y };
     const { width: maskWidth, height: maskHeight } = getMaskSize();
-    const rect = containerRef.current.getBoundingClientRect();
+    const rect = safeAreaRef.current.getBoundingClientRect();
 
     const imgRatio = imgData.width / imgData.height;
     let initialW, initialH;
@@ -84,17 +97,20 @@ export default function App() {
     };
   };
 
+  // 获取防止黑边的绝对最小缩放倍数
   const getMinScale = (imgIdx) => {
-    if (!containerRef.current || !images[imgIdx]) return 0.1;
-    const rect = containerRef.current.getBoundingClientRect();
+    if (!safeAreaRef.current || !images[imgIdx]) return 0.1;
+    const rect = safeAreaRef.current.getBoundingClientRect();
     const { width: maskWidth, height: maskHeight } = getMaskSize();
     const imgRatio = images[imgIdx].width / images[imgIdx].height;
+    
     let initialW, initialH;
     if (imgRatio > rect.width / rect.height) {
       initialW = rect.width; initialH = rect.width / imgRatio;
     } else {
       initialH = rect.height; initialW = rect.height * imgRatio;
     }
+    // 最小缩放比 = 裁剪框 / 原始渲染尺寸 的最大值，保证完全覆盖
     return Math.max(maskWidth / initialW, maskHeight / initialH);
   };
 
@@ -134,7 +150,8 @@ export default function App() {
             id: Date.now() + Math.random(),
             file, url: img.src,
             width: img.naturalWidth, height: img.naturalHeight,
-            transform: { x: 0, y: 0, scale: 1.2 }, 
+            // 上传后初始放大一点点以避免边缘瑕疵
+            transform: { x: 0, y: 0, scale: 1.05 }, 
             smudgePaths: []
           });
         };
@@ -144,6 +161,17 @@ export default function App() {
       setImages(newImages);
       setCurrentIndex(0);
       setStep('edit');
+      
+      // 延迟触发一次对齐计算
+      setTimeout(() => {
+        setImages(prev => {
+           const n = [...prev];
+           const min = getMinScale(0);
+           const targetScale = Math.max(min, n[0].transform.scale);
+           n[0].transform = { ...getClampedTransform(0, 0, targetScale, n[0]), scale: targetScale };
+           return n;
+        });
+      }, 100);
     });
   };
 
@@ -181,7 +209,7 @@ export default function App() {
       }
     } else if (editMode === 'smudge' && activePointers.current.size === 1) {
       isDragging.current = true;
-      const rect = containerRef.current.getBoundingClientRect();
+      const rect = safeAreaRef.current.getBoundingClientRect(); // 基于安全区计算坐标
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       setImages(prev => {
@@ -227,7 +255,7 @@ export default function App() {
         });
       }
     } else if (editMode === 'smudge' && isDragging.current) {
-      const rect = containerRef.current.getBoundingClientRect();
+      const rect = safeAreaRef.current.getBoundingClientRect(); // 基于安全区计算坐标
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       setImages(prev => {
@@ -252,7 +280,7 @@ export default function App() {
       imgObj.onload = () => {
         const canvas = document.createElement('canvas');
         const { width: maskWidth, height: maskHeight } = getMaskSize();
-        const rect = containerRef.current.getBoundingClientRect();
+        const rect = safeAreaRef.current.getBoundingClientRect();
         
         if (targetSize === '960x540') {
           canvas.width = 960;
@@ -341,10 +369,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (step !== 'edit' || !visualCanvasRef.current) return;
+    if (step !== 'edit' || !visualCanvasRef.current || !safeAreaRef.current) return;
     const canvas = visualCanvasRef.current;
     const ctx = canvas.getContext('2d');
-    const rect = canvas.parentElement.getBoundingClientRect();
+    const rect = safeAreaRef.current.getBoundingClientRect();
     canvas.width = rect.width; canvas.height = rect.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const paths = images[currentIndex]?.smudgePaths || [];
@@ -363,12 +391,10 @@ export default function App() {
   if (step === 'upload') {
     return (
       <div className="relative min-h-screen bg-[#09090b] text-zinc-100 flex flex-col items-center justify-center p-6 sm:p-12 overflow-hidden selection:bg-violet-500/30">
-        {/* 背景氛围光效 */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-violet-600/10 blur-[120px] rounded-full pointer-events-none" />
         <div className="absolute bottom-0 right-0 w-[600px] h-[400px] bg-blue-600/10 blur-[100px] rounded-full pointer-events-none" />
 
         <div className="relative z-10 flex flex-col items-center w-full max-w-2xl">
-          {/* Logo 区域 */}
           <div className="flex items-center gap-4 mb-12 animate-fade-in-up">
             <div className="relative bg-gradient-to-br from-blue-500 to-violet-600 p-3.5 rounded-2xl shadow-lg shadow-violet-500/25 ring-1 ring-white/20">
               <Crop size={28} className="text-white drop-shadow-md" />
@@ -382,9 +408,7 @@ export default function App() {
             </h1>
           </div>
 
-          {/* 核心上传区 */}
           <label className="group relative w-full aspect-[2/1] sm:aspect-video rounded-[2.5rem] overflow-hidden cursor-pointer transition-all duration-500 hover:scale-[1.01] shadow-2xl shadow-black/50">
-            {/* 渐变发光边框效果 */}
             <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-fuchsia-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
             <div className="absolute inset-[2px] bg-[#0f0f11]/90 backdrop-blur-xl rounded-[2.5rem] flex flex-col items-center justify-center border border-dashed border-white/10 group-hover:border-violet-500/40 transition-colors duration-300">
               <div className="bg-white/5 p-5 rounded-full mb-5 group-hover:bg-violet-500/10 transition-colors duration-300">
@@ -396,7 +420,6 @@ export default function App() {
             <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileUpload} />
           </label>
 
-          {/* 导出设置卡片 */}
           <div className="w-full mt-8 bg-[#0f0f11]/80 backdrop-blur-xl rounded-[2rem] p-6 sm:p-8 border border-white/5 shadow-xl">
             <h4 className="flex items-center gap-2 text-sm font-semibold text-zinc-300 mb-6 tracking-wide uppercase">
               <Settings size={16} className="text-violet-400"/> 导出偏好设置
@@ -459,7 +482,6 @@ export default function App() {
     );
   }
 
-  // 辅助图标组件
   function ChevronDown(props) {
     return <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
   }
@@ -468,12 +490,14 @@ export default function App() {
   //  UI/UX PRO MAX 视觉重构 - 编辑界面
   // ==========================================
   const currentImage = images[currentIndex];
-  const { width: maskWidth, height: maskHeight } = getMaskSize();
+  // 提前返回避免解构错误
+  if (!currentImage) return null;
+  const { width: maskWidth, height: maskHeight } = safeAreaRef.current ? getMaskSize() : { width: '80%', height: '80%' };
 
   return (
     <div className="h-screen bg-[#000000] text-zinc-100 flex flex-col overflow-hidden select-none font-sans">
       
-      {/* 顶部悬浮导航栏 (Glassmorphism) */}
+      {/* 顶部悬浮导航栏 */}
       <div className="absolute top-0 left-0 right-0 z-50 h-16 flex items-center justify-between px-4 sm:px-6 bg-[#09090b]/80 backdrop-blur-2xl border-b border-white/5">
         <div className="flex items-center gap-3">
            <div className="bg-gradient-to-tr from-blue-600 to-violet-600 p-1.5 rounded-lg shadow-lg shadow-violet-500/20">
@@ -482,7 +506,7 @@ export default function App() {
            <span className="font-bold text-base tracking-wide text-zinc-100">FlowCrop</span>
         </div>
         
-        {/* 比例切换 (居中) */}
+        {/* 比例切换 (桌面端居中) */}
         <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center gap-1.5 bg-white/5 p-1 rounded-full border border-white/5">
           {ASPECT_RATIOS.map(ratio => (
             <button 
@@ -528,38 +552,37 @@ export default function App() {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <div className="absolute inset-0 flex items-center justify-center pt-24 pb-28 md:pt-16 md:pb-24">
+        
+        {/* 新增的安全计算区：负责存放图片和画板，没有任何内边距干扰，保证计算百分百精准 */}
+        <div ref={safeAreaRef} className="absolute top-[112px] bottom-[140px] left-4 right-4 md:left-12 md:right-12 pointer-events-none flex items-center justify-center">
+          
           <img 
             src={currentImage.url} 
             draggable={false}
             style={{ transform: `translate(${currentImage.transform.x}px, ${currentImage.transform.y}px) scale(${currentImage.transform.scale})`, willChange: 'transform' }}
-            className="max-w-full max-h-full object-contain pointer-events-none transition-transform duration-75"
+            className="max-w-full max-h-full object-contain transition-transform duration-75"
           />
-        </div>
 
-        <canvas ref={visualCanvasRef} className="absolute inset-0 pointer-events-none z-10" />
+          <canvas ref={visualCanvasRef} className="absolute inset-0 z-10" />
 
-        <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center pt-24 pb-28 md:pt-16 md:pb-24">
-          {/* 高级暗角遮罩 */}
-          <div className="absolute inset-0 bg-black/70 backdrop-blur-[2px]" />
-          
-          {/* 裁剪框 - 升级版 */}
-          <div 
-            className="relative border border-white/40 shadow-[0_0_0_9999px_rgba(0,0,0,0.7),_0_0_30px_rgba(0,0,0,0.3)] transition-all duration-300 ease-out"
-            style={{ width: maskWidth || '80%', height: maskHeight || '80%' }}
-          >
-            {/* 网格参考线 */}
-            <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
-              <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
-              <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
-              <div className="border-r border-white"></div><div className="border-r border-white"></div><div></div>
+          <div className="absolute inset-0 z-20 flex items-center justify-center">
+            {/* 修复导致图片模糊的暗层：去除了内部覆盖，改用外部超大阴影遮盖黑边 */}
+            <div 
+              className="relative border border-white/60 shadow-[0_0_0_9999px_rgba(0,0,0,0.85)] transition-all duration-300 ease-out"
+              style={{ width: maskWidth || '80%', height: maskHeight || '80%' }}
+            >
+              <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
+                <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
+                <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
+                <div className="border-r border-white"></div><div className="border-r border-white"></div><div></div>
+              </div>
+              <div className="absolute -top-[1.5px] -left-[1.5px] w-6 h-6 border-t-[3px] border-l-[3px] border-white rounded-tl-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
+              <div className="absolute -top-[1.5px] -right-[1.5px] w-6 h-6 border-t-[3px] border-r-[3px] border-white rounded-tr-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
+              <div className="absolute -bottom-[1.5px] -left-[1.5px] w-6 h-6 border-b-[3px] border-l-[3px] border-white rounded-bl-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
+              <div className="absolute -bottom-[1.5px] -right-[1.5px] w-6 h-6 border-b-[3px] border-r-[3px] border-white rounded-br-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
             </div>
-            {/* 视觉角标 */}
-            <div className="absolute -top-[1.5px] -left-[1.5px] w-6 h-6 border-t-[3px] border-l-[3px] border-white rounded-tl-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
-            <div className="absolute -top-[1.5px] -right-[1.5px] w-6 h-6 border-t-[3px] border-r-[3px] border-white rounded-tr-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
-            <div className="absolute -bottom-[1.5px] -left-[1.5px] w-6 h-6 border-b-[3px] border-l-[3px] border-white rounded-bl-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
-            <div className="absolute -bottom-[1.5px] -right-[1.5px] w-6 h-6 border-b-[3px] border-r-[3px] border-white rounded-br-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
           </div>
+
         </div>
       </div>
 
