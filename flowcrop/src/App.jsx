@@ -34,6 +34,9 @@ export default function App() {
   const dragStart = useRef({ x: 0, y: 0 });
   const isDragging = useRef(false);
 
+  // --- 新增：拖拽状态 ---
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
   // 强制窗口尺寸改变时重新渲染以更新裁剪框
   useEffect(() => {
     const handleResize = () => setImages(prev => [...prev]);
@@ -138,9 +141,12 @@ export default function App() {
     return () => container.removeEventListener('wheel', handleWheel);
   }, [step, currentIndex, editMode, aspectRatio, images]);
 
-  const handleFileUpload = (e) => {
-    const files = Array.from(e.target.files).slice(0, 30);
+  // --- 优化：将文件处理逻辑单独抽离出来，供点击和拖拽共用 ---
+  const processFiles = (fileList) => {
+    // 过滤出真正的图片文件，并限制 30 张
+    const files = Array.from(fileList).filter(file => file.type.startsWith('image/')).slice(0, 30);
     if (files.length === 0) return;
+    
     const loadPromises = files.map(file => {
       return new Promise((resolve) => {
         const img = new Image();
@@ -150,21 +156,21 @@ export default function App() {
             id: Date.now() + Math.random(),
             file, url: img.src,
             width: img.naturalWidth, height: img.naturalHeight,
-            // 上传后初始放大一点点以避免边缘瑕疵
             transform: { x: 0, y: 0, scale: 1.05 }, 
             smudgePaths: []
           });
         };
       });
     });
+
     Promise.all(loadPromises).then(newImages => {
       setImages(newImages);
       setCurrentIndex(0);
       setStep('edit');
       
-      // 延迟触发一次对齐计算
       setTimeout(() => {
         setImages(prev => {
+           if(prev.length === 0) return prev;
            const n = [...prev];
            const min = getMinScale(0);
            const targetScale = Math.max(min, n[0].transform.scale);
@@ -173,6 +179,33 @@ export default function App() {
         });
       }, 100);
     });
+  };
+
+  const handleFileUpload = (e) => {
+    if (e.target.files) processFiles(e.target.files);
+  };
+
+  // --- 新增：拖拽事件处理 ---
+  const handleDragOver = (e) => {
+    e.preventDefault(); // 必须阻止默认事件，否则无法触发 drop
+    e.stopPropagation();
+    setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault(); // 阻止浏览器直接打开图片的默认行为
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processFiles(e.dataTransfer.files);
+    }
   };
 
   const updateRatio = (val) => {
@@ -408,13 +441,21 @@ export default function App() {
             </h1>
           </div>
 
-          <label className="group relative w-full aspect-[2/1] sm:aspect-video rounded-[2.5rem] overflow-hidden cursor-pointer transition-all duration-500 hover:scale-[1.01] shadow-2xl shadow-black/50">
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-fuchsia-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-            <div className="absolute inset-[2px] bg-[#0f0f11]/90 backdrop-blur-xl rounded-[2.5rem] flex flex-col items-center justify-center border border-dashed border-white/10 group-hover:border-violet-500/40 transition-colors duration-300">
-              <div className="bg-white/5 p-5 rounded-full mb-5 group-hover:bg-violet-500/10 transition-colors duration-300">
-                <Upload size={40} className="text-zinc-400 group-hover:text-violet-400 transition-colors duration-300" />
+          <label 
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`group relative w-full aspect-[2/1] sm:aspect-video rounded-[2.5rem] overflow-hidden cursor-pointer transition-all duration-500 shadow-2xl ${isDraggingOver ? 'scale-[1.02] shadow-violet-500/40 ring-2 ring-violet-500/50' : 'hover:scale-[1.01] shadow-black/50'}`}
+          >
+            <div className={`absolute inset-0 bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-fuchsia-500/20 transition-opacity duration-500 ${isDraggingOver ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} />
+            <div className={`absolute inset-[2px] backdrop-blur-xl rounded-[2.5rem] flex flex-col items-center justify-center border border-dashed transition-colors duration-300 ${isDraggingOver ? 'bg-[#0f0f11]/60 border-violet-500' : 'bg-[#0f0f11]/90 border-white/10 group-hover:border-violet-500/40'}`}>
+              <div className={`p-5 rounded-full mb-5 transition-colors duration-300 ${isDraggingOver ? 'bg-violet-500/20' : 'bg-white/5 group-hover:bg-violet-500/10'}`}>
+                <Upload size={40} className={`transition-colors duration-300 ${isDraggingOver ? 'text-violet-400' : 'text-zinc-400 group-hover:text-violet-400'}`} />
               </div>
-              <p className="text-2xl font-semibold mb-2 text-zinc-200 group-hover:text-white transition-colors">拖拽或点击上传图片</p>
+              <p className={`text-2xl font-semibold mb-2 transition-colors ${isDraggingOver ? 'text-white' : 'text-zinc-200 group-hover:text-white'}`}>
+                {isDraggingOver ? '松开鼠标，立即上传！' : '拖拽或点击上传图片'}
+              </p>
               <p className="text-zinc-500 text-sm font-medium">支持批量多选，单次上限 <span className="text-violet-400">30</span> 张</p>
             </div>
             <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileUpload} />
