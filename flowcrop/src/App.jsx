@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Download, Settings, RefreshCw, ChevronLeft, ChevronRight, Crop, Move, Eraser, ScanFace, Save, Image as ImageIcon, X } from 'lucide-react';
+import { Upload, Download, Settings, RefreshCw, ChevronLeft, ChevronRight, Crop, Move, Eraser, Save, Image as ImageIcon, X, Sparkles, Layers } from 'lucide-react';
 
 const ASPECT_RATIOS = [
   { label: '1:1', value: 1 },
   { label: '3:4', value: 0.75 },
   { label: '4:3', value: 1.333 },
   { label: '16:9', value: 1.778 },
-  { label: '960:540', value: 960 / 540 }, // 精确比例
+  { label: '960:540', value: 960 / 540 },
   { label: '自由', value: null }
 ];
 
@@ -14,15 +14,15 @@ export default function App() {
   const [step, setStep] = useState('upload'); 
   const [images, setImages] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [aspectRatio, setAspectRatio] = useState(1.778); 
+  const [aspectRatio, setAspectRatio] = useState(960 / 540); 
   const [editMode, setEditMode] = useState('move'); 
   const [isExporting, setIsExporting] = useState(false);
   const [showPreviewModal, setShowPreviewModal] = useState(null); 
 
   // 导出配置
-  const [exportFormat, setExportFormat] = useState('image/jpeg');
-  const [exportQuality, setExportQuality] = useState(0.9);
-  const [targetSize, setTargetSize] = useState('auto'); // 'auto' 或 '960x540'
+  const [exportFormat, setExportFormat] = useState('image/png');
+  const [exportQuality, setExportQuality] = useState(1);
+  const [targetSize, setTargetSize] = useState('960x540'); 
 
   const containerRef = useRef(null);
   const visualCanvasRef = useRef(null);
@@ -40,7 +40,6 @@ export default function App() {
     }
   }, []);
 
-  // 获取裁剪框在容器内的像素尺寸
   const getMaskSize = () => {
     if (!containerRef.current) return { width: 0, height: 0 };
     const rect = containerRef.current.getBoundingClientRect();
@@ -60,7 +59,6 @@ export default function App() {
     return { width: targetW, height: targetH };
   };
 
-  // 物理碰撞检测：防止露出黑边
   const getClampedTransform = (x, y, scale, imgData) => {
     if (!containerRef.current || !imgData) return { x, y };
     const { width: maskWidth, height: maskHeight } = getMaskSize();
@@ -86,7 +84,6 @@ export default function App() {
     };
   };
 
-  // 获取防止黑边的最小缩放倍数
   const getMinScale = (imgIdx) => {
     if (!containerRef.current || !images[imgIdx]) return 0.1;
     const rect = containerRef.current.getBoundingClientRect();
@@ -150,10 +147,9 @@ export default function App() {
     });
   };
 
-  // 比例切换后的修正（增加安全判断）
   const updateRatio = (val) => {
     setAspectRatio(val);
-    if (images.length === 0) return; // 如果没图片，只改比例不操作图片
+    if (images.length === 0) return; 
 
     setTimeout(() => {
       setImages(prev => {
@@ -361,64 +357,101 @@ export default function App() {
     });
   }, [images, currentIndex, step]);
 
+  // ==========================================
+  //  UI/UX PRO MAX 视觉重构 - 上传界面
+  // ==========================================
   if (step === 'upload') {
     return (
-      <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-4">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-900/40"><Crop size={24} /></div>
-          <h1 className="text-3xl font-bold tracking-tight">FlowCrop <span className="text-gray-500 font-light ml-1">批量裁剪大师</span></h1>
-        </div>
+      <div className="relative min-h-screen bg-[#09090b] text-zinc-100 flex flex-col items-center justify-center p-6 sm:p-12 overflow-hidden selection:bg-violet-500/30">
+        {/* 背景氛围光效 */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-violet-600/10 blur-[120px] rounded-full pointer-events-none" />
+        <div className="absolute bottom-0 right-0 w-[600px] h-[400px] bg-blue-600/10 blur-[100px] rounded-full pointer-events-none" />
 
-        <div className="w-full max-w-lg space-y-6">
-          <label className="w-full aspect-video bg-[#1A1A1A] border-2 border-dashed border-gray-700 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-[#222] transition-all group">
-            <Upload size={48} className="text-gray-500 group-hover:text-blue-500 transition-colors mb-4" />
-            <p className="text-xl font-medium mb-1">点击上传图片</p>
-            <p className="text-gray-500 text-sm">支持批量多选，单次上限 30 张</p>
+        <div className="relative z-10 flex flex-col items-center w-full max-w-2xl">
+          {/* Logo 区域 */}
+          <div className="flex items-center gap-4 mb-12 animate-fade-in-up">
+            <div className="relative bg-gradient-to-br from-blue-500 to-violet-600 p-3.5 rounded-2xl shadow-lg shadow-violet-500/25 ring-1 ring-white/20">
+              <Crop size={28} className="text-white drop-shadow-md" />
+              <div className="absolute -top-1 -right-1 bg-[#09090b] rounded-full p-0.5"><Sparkles size={12} className="text-violet-400" /></div>
+            </div>
+            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white">
+              Flow<span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-violet-400">Crop</span>
+              <span className="inline-block ml-3 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-zinc-400 font-medium align-middle uppercase tracking-wider backdrop-blur-sm">
+                Pro Max
+              </span>
+            </h1>
+          </div>
+
+          {/* 核心上传区 */}
+          <label className="group relative w-full aspect-[2/1] sm:aspect-video rounded-[2.5rem] overflow-hidden cursor-pointer transition-all duration-500 hover:scale-[1.01] shadow-2xl shadow-black/50">
+            {/* 渐变发光边框效果 */}
+            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-fuchsia-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            <div className="absolute inset-[2px] bg-[#0f0f11]/90 backdrop-blur-xl rounded-[2.5rem] flex flex-col items-center justify-center border border-dashed border-white/10 group-hover:border-violet-500/40 transition-colors duration-300">
+              <div className="bg-white/5 p-5 rounded-full mb-5 group-hover:bg-violet-500/10 transition-colors duration-300">
+                <Upload size={40} className="text-zinc-400 group-hover:text-violet-400 transition-colors duration-300" />
+              </div>
+              <p className="text-2xl font-semibold mb-2 text-zinc-200 group-hover:text-white transition-colors">拖拽或点击上传图片</p>
+              <p className="text-zinc-500 text-sm font-medium">支持批量多选，单次上限 <span className="text-violet-400">30</span> 张</p>
+            </div>
             <input type="file" multiple accept="image/*" className="hidden" onChange={handleFileUpload} />
           </label>
 
-          <div className="bg-[#1A1A1A] rounded-2xl p-6 border border-gray-800">
-            <h4 className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-5"><Settings size={16}/> 导出设置预设</h4>
-            <div className="grid grid-cols-2 gap-6 mb-6">
+          {/* 导出设置卡片 */}
+          <div className="w-full mt-8 bg-[#0f0f11]/80 backdrop-blur-xl rounded-[2rem] p-6 sm:p-8 border border-white/5 shadow-xl">
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-zinc-300 mb-6 tracking-wide uppercase">
+              <Settings size={16} className="text-violet-400"/> 导出偏好设置
+            </h4>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-5">
               <div className="space-y-2">
-                <label className="text-xs text-gray-500">导出格式</label>
-                <select 
-                  value={exportFormat} 
-                  onChange={e => setExportFormat(e.target.value)}
-                  className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
-                >
-                  <option value="image/jpeg">JPG (推荐)</option>
-                  <option value="image/png">PNG (透明/无损)</option>
-                </select>
+                <label className="text-xs font-medium text-zinc-500 ml-1">文件格式</label>
+                <div className="relative">
+                  <select 
+                    value={exportFormat} 
+                    onChange={e => setExportFormat(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-sm text-zinc-200 appearance-none outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all cursor-pointer"
+                  >
+                    <option value="image/jpeg" className="bg-[#18181b]">JPG (推荐，体积小)</option>
+                    <option value="image/png" className="bg-[#18181b]">PNG (透明背景/无损)</option>
+                  </select>
+                  <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" size={16} />
+                </div>
               </div>
+
               <div className="space-y-2">
-                <label className="text-xs text-gray-500">导出画质</label>
-                <select 
-                  value={exportQuality} 
-                  onChange={e => setExportQuality(parseFloat(e.target.value))}
-                  className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
-                >
-                  <option value={1}>极高 (100%)</option>
-                  <option value={0.9}>高 (90%)</option>
-                  <option value={0.8}>中 (80%)</option>
-                  <option value={0.7}>低 (70%)</option>
-                </select>
+                <label className="text-xs font-medium text-zinc-500 ml-1">渲染画质</label>
+                <div className="relative">
+                  <select 
+                    value={exportQuality} 
+                    onChange={e => setExportQuality(parseFloat(e.target.value))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-sm text-zinc-200 appearance-none outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all cursor-pointer"
+                  >
+                    <option value={1} className="bg-[#18181b]">极高 (100% 原始画质)</option>
+                    <option value={0.9} className="bg-[#18181b]">高 (90% 均衡推荐)</option>
+                    <option value={0.8} className="bg-[#18181b]">中 (80%)</option>
+                  </select>
+                  <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" size={16} />
+                </div>
               </div>
             </div>
+
             <div className="space-y-2">
-              <label className="text-xs text-gray-500">导出尺寸 (批量设置)</label>
-              <select 
-                value={targetSize} 
-                onChange={e => {
-                  const val = e.target.value;
-                  setTargetSize(val);
-                  if(val === '960x540') setAspectRatio(960/540);
-                }}
-                className="w-full bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
-              >
-                <option value="auto">自动 (原始高分辨率)</option>
-                <option value="960x540">固定像素 960 x 540 (常用)</option>
-              </select>
+              <label className="text-xs font-medium text-zinc-500 ml-1">统一导出尺寸</label>
+              <div className="relative">
+                <select 
+                  value={targetSize} 
+                  onChange={e => {
+                    const val = e.target.value;
+                    setTargetSize(val);
+                    if(val === '960x540') setAspectRatio(960/540);
+                  }}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3.5 text-sm text-violet-300 font-medium appearance-none outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all cursor-pointer"
+                >
+                  <option value="auto" className="bg-[#18181b]">自适应 (保持当前超清分辨率)</option>
+                  <option value="960x540" className="bg-[#18181b]">固定 960 × 540 像素 (常用预设)</option>
+                </select>
+                <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-violet-400 pointer-events-none" size={16} />
+              </div>
             </div>
           </div>
         </div>
@@ -426,43 +459,76 @@ export default function App() {
     );
   }
 
+  // 辅助图标组件
+  function ChevronDown(props) {
+    return <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+  }
+
+  // ==========================================
+  //  UI/UX PRO MAX 视觉重构 - 编辑界面
+  // ==========================================
   const currentImage = images[currentIndex];
   const { width: maskWidth, height: maskHeight } = getMaskSize();
 
   return (
-    <div className="h-screen bg-black text-white flex flex-col overflow-hidden select-none">
+    <div className="h-screen bg-[#000000] text-zinc-100 flex flex-col overflow-hidden select-none font-sans">
       
-      <div className="h-14 flex items-center justify-between px-4 bg-[#121212] border-b border-gray-800 shrink-0 z-50">
-        <div className="flex items-center gap-2 font-bold text-sm">
-           <div className="bg-blue-600 p-1 rounded-md"><Crop size={14} /></div> FlowCrop
+      {/* 顶部悬浮导航栏 (Glassmorphism) */}
+      <div className="absolute top-0 left-0 right-0 z-50 h-16 flex items-center justify-between px-4 sm:px-6 bg-[#09090b]/80 backdrop-blur-2xl border-b border-white/5">
+        <div className="flex items-center gap-3">
+           <div className="bg-gradient-to-tr from-blue-600 to-violet-600 p-1.5 rounded-lg shadow-lg shadow-violet-500/20">
+             <Crop size={16} className="text-white" />
+           </div>
+           <span className="font-bold text-base tracking-wide text-zinc-100">FlowCrop</span>
         </div>
-        <div className="bg-gray-800 px-3 py-1 rounded-full text-xs font-mono text-gray-300">
-          {currentIndex + 1} / {images.length}
+        
+        {/* 比例切换 (居中) */}
+        <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center gap-1.5 bg-white/5 p-1 rounded-full border border-white/5">
+          {ASPECT_RATIOS.map(ratio => (
+            <button 
+              key={ratio.label}
+              onClick={() => updateRatio(ratio.value)}
+              className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${aspectRatio === ratio.value ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-white/5'}`}
+            >
+              {ratio.label}
+            </button>
+          ))}
         </div>
-        <button onClick={() => setStep('upload')} className="text-xs text-gray-500 hover:text-white transition">退出</button>
+
+        <div className="flex items-center gap-4">
+          <div className="bg-white/5 px-4 py-1.5 rounded-full text-xs font-mono text-zinc-300 border border-white/5 shadow-inner">
+            {currentIndex + 1} <span className="text-zinc-600">/</span> {images.length}
+          </div>
+          <button onClick={() => setStep('upload')} className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors">
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
-      <div className="h-12 flex items-center px-4 bg-[#121212] gap-3 overflow-x-auto border-b border-gray-800/50 shrink-0 no-scrollbar">
+      {/* 移动端比例栏 */}
+      <div className="md:hidden absolute top-16 left-0 right-0 z-40 h-12 flex items-center px-4 bg-[#09090b]/90 backdrop-blur-xl gap-2 overflow-x-auto border-b border-white/5 no-scrollbar">
         {ASPECT_RATIOS.map(ratio => (
           <button 
             key={ratio.label}
             onClick={() => updateRatio(ratio.value)}
-            className={`whitespace-nowrap px-6 py-1.5 rounded-full text-xs transition ${aspectRatio === ratio.value ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-800'}`}
+            className={`whitespace-nowrap px-5 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${aspectRatio === ratio.value ? 'bg-zinc-800 text-white border border-white/10' : 'text-zinc-400 bg-white/5 border border-transparent'}`}
           >
             {ratio.label}
           </button>
         ))}
       </div>
 
+      {/* 核心工作区 */}
       <div 
         ref={containerRef}
-        className="flex-1 relative overflow-hidden bg-black touch-none"
+        className="flex-1 relative overflow-hidden bg-[#0A0A0C] touch-none"
+        style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.03) 1px, transparent 0)', backgroundSize: '32px 32px' }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div className="absolute inset-0 flex items-center justify-center pt-24 pb-28 md:pt-16 md:pb-24">
           <img 
             src={currentImage.url} 
             draggable={false}
@@ -473,62 +539,93 @@ export default function App() {
 
         <canvas ref={visualCanvasRef} className="absolute inset-0 pointer-events-none z-10" />
 
-        <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60 shadow-[inset_0_0_100px_rgba(0,0,0,1)]" />
+        <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center pt-24 pb-28 md:pt-16 md:pb-24">
+          {/* 高级暗角遮罩 */}
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-[2px]" />
+          
+          {/* 裁剪框 - 升级版 */}
           <div 
-            className="relative border-2 border-white/60 shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
-            style={{ width: maskWidth || '80%', height: maskHeight || '80%', transition: 'all 0.15s ease-out' }}
+            className="relative border border-white/40 shadow-[0_0_0_9999px_rgba(0,0,0,0.7),_0_0_30px_rgba(0,0,0,0.3)] transition-all duration-300 ease-out"
+            style={{ width: maskWidth || '80%', height: maskHeight || '80%' }}
           >
+            {/* 网格参考线 */}
             <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-20 pointer-events-none">
               <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
               <div className="border-r border-b border-white"></div><div className="border-r border-b border-white"></div><div className="border-b border-white"></div>
               <div className="border-r border-white"></div><div className="border-r border-white"></div><div></div>
             </div>
-            <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-white rounded-tl-sm"></div>
-            <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-white rounded-tr-sm"></div>
-            <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-white rounded-bl-sm"></div>
-            <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-white rounded-br-sm"></div>
+            {/* 视觉角标 */}
+            <div className="absolute -top-[1.5px] -left-[1.5px] w-6 h-6 border-t-[3px] border-l-[3px] border-white rounded-tl-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
+            <div className="absolute -top-[1.5px] -right-[1.5px] w-6 h-6 border-t-[3px] border-r-[3px] border-white rounded-tr-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
+            <div className="absolute -bottom-[1.5px] -left-[1.5px] w-6 h-6 border-b-[3px] border-l-[3px] border-white rounded-bl-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
+            <div className="absolute -bottom-[1.5px] -right-[1.5px] w-6 h-6 border-b-[3px] border-r-[3px] border-white rounded-br-sm shadow-[0_0_10px_rgba(255,255,255,0.2)]"></div>
           </div>
         </div>
       </div>
 
-      <div className="bg-[#121212] border-t border-gray-800 p-4 pb-8 shrink-0 flex flex-col gap-4">
-        
-        <div className="flex items-center justify-between">
-          <div className="flex bg-[#1E1E1E] p-1 rounded-2xl">
-            <button onClick={() => setEditMode('move')} className={`p-3 rounded-xl transition ${editMode === 'move' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`}><Move size={22} /></button>
-            <button onClick={() => setEditMode('smudge')} className={`p-3 rounded-xl transition ${editMode === 'smudge' ? 'bg-blue-600 shadow-lg' : 'text-gray-500'}`}><Eraser size={22} /></button>
-          </div>
-
-          <div className="flex gap-2">
-            <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale(currentIndex)}; return n; })} className="p-3 bg-[#1E1E1E] rounded-xl text-gray-400 hover:text-white"><RefreshCw size={22} /></button>
-            <button onClick={handleSaveCurrent} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-500 rounded-xl font-medium transition shadow-lg shadow-green-900/20"><Save size={20} /> 保存当前</button>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex gap-2">
-            <button onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))} disabled={currentIndex===0} className="w-12 h-12 flex items-center justify-center bg-[#1E1E1E] rounded-2xl disabled:opacity-20"><ChevronLeft /></button>
-            <button onClick={() => setCurrentIndex(Math.min(images.length-1, currentIndex + 1))} disabled={currentIndex===images.length-1} className="w-12 h-12 flex items-center justify-center bg-[#1E1E1E] rounded-2xl disabled:opacity-20"><ChevronRight /></button>
-          </div>
+      {/* 底部控制岛 (Floating Island Design) */}
+      <div className="absolute bottom-6 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[800px] z-50">
+        <div className="bg-[#18181b]/90 backdrop-blur-2xl border border-white/10 rounded-3xl p-3 shadow-2xl flex flex-col gap-3">
           
-          <div className="flex gap-2 flex-1">
-            <button onClick={handleSaveAll} disabled={isExporting} className="flex-1 h-12 flex items-center justify-center gap-2 bg-gray-800 rounded-2xl text-sm font-medium hover:bg-gray-700 transition disabled:opacity-50">
-               {isExporting ? <RefreshCw className="animate-spin" /> : <ImageIcon size={18} />} 全部保存
-            </button>
-            <button onClick={handleExportZip} disabled={isExporting} className="flex-1 h-12 flex items-center justify-center gap-2 bg-blue-600 rounded-2xl text-sm font-bold hover:bg-blue-500 transition shadow-lg shadow-blue-900/30 disabled:opacity-50">
-               {isExporting ? <RefreshCw className="animate-spin" /> : <Download size={18} />} 导出 ZIP
+          <div className="flex items-center justify-between px-1">
+            {/* 左侧工具栏 */}
+            <div className="flex bg-black/40 p-1 rounded-2xl border border-white/5">
+              <button onClick={() => setEditMode('move')} className={`p-2.5 rounded-xl transition-all duration-300 ${editMode === 'move' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`} title="平移与缩放"><Move size={20} /></button>
+              <button onClick={() => setEditMode('smudge')} className={`p-2.5 rounded-xl transition-all duration-300 ${editMode === 'smudge' ? 'bg-violet-600 text-white shadow-md shadow-violet-900/30' : 'text-zinc-500 hover:text-zinc-300'}`} title="智能去水印"><Eraser size={20} /></button>
+              <div className="w-[1px] bg-white/10 mx-1 my-1"></div>
+              <button onClick={() => setImages(prev => { const n=[...prev]; n[currentIndex].smudgePaths=[]; n[currentIndex].transform={x:0,y:0,scale:getMinScale(currentIndex)}; return n; })} className="p-2.5 rounded-xl text-zinc-500 hover:text-zinc-300 hover:bg-white/5 transition-colors" title="重置图片"><RefreshCw size={20} /></button>
+            </div>
+
+            {/* 中间翻页 (桌面端显示) */}
+            <div className="hidden md:flex gap-2">
+              <button onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))} disabled={currentIndex===0} className="w-10 h-10 flex items-center justify-center bg-white/5 hover:bg-white/10 rounded-full disabled:opacity-20 transition-colors"><ChevronLeft size={18} /></button>
+              <button onClick={() => setCurrentIndex(Math.min(images.length-1, currentIndex + 1))} disabled={currentIndex===images.length-1} className="w-10 h-10 flex items-center justify-center bg-white/5 hover:bg-white/10 rounded-full disabled:opacity-20 transition-colors"><ChevronRight size={18} /></button>
+            </div>
+
+            {/* 右侧：单张保存 */}
+            <button onClick={handleSaveCurrent} className="group relative flex items-center gap-2 px-5 py-2.5 bg-zinc-100 hover:bg-white text-zinc-900 rounded-2xl font-semibold transition-all duration-300 shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]">
+              <Save size={18} className="group-hover:scale-110 transition-transform duration-300" />
+              <span>保存当前</span>
             </button>
           </div>
+
+          <div className="w-full h-[1px] bg-gradient-to-r from-transparent via-white/10 to-transparent my-1 hidden md:block"></div>
+
+          {/* 底部导出区 */}
+          <div className="flex items-center gap-3">
+             {/* 移动端翻页移到这里 */}
+             <div className="md:hidden flex gap-2 shrink-0">
+                <button onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))} disabled={currentIndex===0} className="w-12 h-12 flex items-center justify-center bg-black/40 border border-white/5 rounded-2xl disabled:opacity-20 transition-colors"><ChevronLeft size={20}/></button>
+                <button onClick={() => setCurrentIndex(Math.min(images.length-1, currentIndex + 1))} disabled={currentIndex===images.length-1} className="w-12 h-12 flex items-center justify-center bg-black/40 border border-white/5 rounded-2xl disabled:opacity-20 transition-colors"><ChevronRight size={20} /></button>
+             </div>
+
+            <button onClick={handleSaveAll} disabled={isExporting} className="flex-1 h-12 flex items-center justify-center gap-2 bg-black/40 hover:bg-black/60 border border-white/5 rounded-2xl text-sm font-medium transition-all duration-300 disabled:opacity-50 text-zinc-300 hover:text-white">
+               {isExporting ? <RefreshCw className="animate-spin" size={18} /> : <ImageIcon size={18} />} 全部保存相册
+            </button>
+            <button onClick={handleExportZip} disabled={isExporting} className="flex-1 h-12 relative flex items-center justify-center gap-2 rounded-2xl text-sm font-bold text-white transition-all duration-300 disabled:opacity-50 overflow-hidden group">
+               <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-violet-600 transition-transform duration-500 group-hover:scale-105" />
+               <div className="absolute inset-0 bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+               <span className="relative flex items-center gap-2 z-10 drop-shadow-md">
+                 {isExporting ? <RefreshCw className="animate-spin" size={18} /> : <Download size={18} />} 导出 ZIP 包
+               </span>
+            </button>
+          </div>
+
         </div>
       </div>
 
+      {/* 手机端长按保存弹窗 */}
       {showPreviewModal && (
-        <div className="fixed inset-0 z-[100] bg-black/90 flex flex-col items-center justify-center p-6" onClick={() => setShowPreviewModal(null)}>
-          <div className="absolute top-6 right-6 text-gray-400"><X size={32} /></div>
-          <p className="text-blue-400 mb-4 animate-pulse font-medium">✨ 请长按下方图片选择“保存到相册”</p>
-          <img src={showPreviewModal} className="max-w-full max-h-[70vh] rounded-lg shadow-2xl border border-white/10" onClick={e => e.stopPropagation()} />
-          <button className="mt-8 px-8 py-3 bg-white/10 rounded-full text-sm">点击空白处关闭</button>
+        <div className="fixed inset-0 z-[100] bg-[#09090b]/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowPreviewModal(null)}>
+          <div className="absolute top-6 right-6 text-zinc-500 hover:text-white bg-white/5 p-2 rounded-full cursor-pointer transition-colors"><X size={24} /></div>
+          <div className="flex items-center gap-2 mb-6 text-violet-400 bg-violet-400/10 px-4 py-2 rounded-full border border-violet-400/20">
+             <Sparkles size={16} className="animate-pulse" />
+             <p className="text-sm font-medium">长按下方图片，选择“保存到相册”</p>
+          </div>
+          <div className="relative p-1 rounded-2xl bg-gradient-to-br from-white/20 to-white/5 shadow-2xl">
+             <img src={showPreviewModal} className="max-w-full max-h-[65vh] rounded-xl" onClick={e => e.stopPropagation()} />
+          </div>
+          <button className="mt-10 px-8 py-3 bg-white/10 hover:bg-white/20 border border-white/10 rounded-full text-sm font-medium text-white transition-colors">完成并关闭</button>
         </div>
       )}
 
